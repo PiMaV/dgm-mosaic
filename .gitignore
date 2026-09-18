@@ -1,0 +1,4 @@
+bin/
+*.npy
+*.exe
+.DS_Store
