@@ -4,28 +4,32 @@
 
 Part of [WETTER](https://wetter.mess.engineering).
 
-## Product path (drag-and-drop GUI)
+Drop a folder of DGM GeoTIFF tiles, preview the mosaic, drag a rectangle of
+tiles, **Send to BLITZ** or DONNER.
 
-The working DGM mosaic **stage** is the PyQt tool in the suite converters tree — tile preview, rectangle select, drop a folder, Send to BLITZ:
+## Download and run
 
-```bash
-cd ../converters
-uv sync
-uv run dgm-mosaic
-```
+Get the latest release binary. Linux: `chmod +x`, then run. Optional: pass a
+tile folder path. Click **Open…** / drop a folder if you start empty.
 
-BLITZ Stream: `http://127.0.0.1:5056`, token `dgm`.
+BLITZ → Stream: `http://127.0.0.1:5056`, token `dgm`.
 
 Drag-and-drop of a tile folder is the primary ingest. Browse is fallback only.
 
-## This Go repo
+## Develop
 
-CLI mosaic + Viewer Contract hub (and experimental Fyne UI under `internal/ui`). Native Fyne needs system OpenGL/X11 headers (`libgl1-mesa-dev`, `xorg-dev`, …). Until that builds on every machine, **use `uv run dgm-mosaic` above**.
+```bash
+uv sync --group dev
+uv run pytest -q
+uv run dgm-mosaic
+```
+
+Go CLI / hub (optional, same Viewer Contract):
 
 ```bash
 go test ./...
-go build -o bin/dgm-mosaic ./cmd/dgm-mosaic
-./bin/dgm-mosaic path/to/tiles -o out.npy   # CLI
+go build -o bin/dgm-mosaic-cli ./cmd/dgm-mosaic
+./bin/dgm-mosaic-cli path/to/tiles -o out.npy
 ```
 
 Agents: [`docs/llm-brief.md`](docs/llm-brief.md).

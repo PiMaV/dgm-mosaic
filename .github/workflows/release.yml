@@ -1,0 +1,105 @@
+# Onefile GUI binaries when you push a tag v* (e.g. v0.1.0).
+# Before tagging: set version in pyproject.toml to match the tag (without "v").
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $p = Get-Content -Raw -Encoding UTF8 pyproject.toml
+          $m = [regex]::Match($p, '(?m)^\s*version\s*=\s*"([^"]+)"')
+          if (-not $m.Success) { throw "Could not find version in pyproject.toml" }
+          "version=$($m.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - name: Build
+        shell: pwsh
+        run: |
+          uv sync --group dev
+          uv run pyinstaller DGM.spec --noconfirm --clean
+          if (!(Test-Path dist/DGM.exe)) { throw "dist/DGM.exe not found" }
+          Move-Item dist/DGM.exe "dist/DGM-v$($env:VERSION)-windows-x86_64.exe"
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DGM-Windows
+          path: dist/DGM-v*-windows-x86_64.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb-cursor0 libxkbcommon-x11-0 libegl1 libgl1 libdbus-1-3 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
+            libxcb-shape0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Read version
+        id: ver
+        run: |
+          python -c "import re; print('version=' + re.search(r'(?m)^version\s*=\s*\"([^\"]+)\"', open('pyproject.toml').read()).group(1))" >> "$GITHUB_OUTPUT"
+      - name: Test and build
+        run: |
+          uv sync --group dev
+          uv run pytest -q
+          uv run pyinstaller DGM.spec --noconfirm --clean
+          test -f dist/DGM
+          mv dist/DGM "dist/DGM-v${{ steps.ver.outputs.version }}-linux-x86_64"
+          chmod +x "dist/DGM-v${{ steps.ver.outputs.version }}-linux-x86_64"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+      - name: Go CLI artifact
+        run: |
+          go test ./...
+          go build -o "dist/dgm-mosaic-cli-v${{ steps.ver.outputs.version }}-linux-amd64" ./cmd/dgm-mosaic
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DGM-Linux
+          path: |
+            dist/DGM-v*-linux-x86_64
+            dist/dgm-mosaic-cli-v*-linux-amd64
+
+  release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: DGM-Windows
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: DGM-Linux
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            **DGM mosaic** — drop a GeoTIFF tile folder, preview, select a
+            rectangle, Send to BLITZ / DONNER.
+
+            Linux: `chmod +x DGM-v…-linux-x86_64`, then run.
+
+            BLITZ → Stream: `http://127.0.0.1:5056`, token `dgm`.

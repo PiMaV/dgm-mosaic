@@ -3,7 +3,7 @@
 ```mermaid
 flowchart LR
   tifs[DGM_TIFFs_tfw]
-  ui[Web_UI]
+  ui[PyQt_DnD_stage]
   mosaic[Mosaic_quantize]
   hub[Viewer_Contract_hub]
   blitz[BLITZ]
@@ -15,10 +15,12 @@ flowchart LR
 
 ## Roles
 
-- **Host binary** binds one port: HTTP UI + Engine.IO/Socket.IO + `.npy` GET.
-- **Hub** implements the WETTER Viewer Contract (same events as WOLKE / EVT).
+- **Product binary** (PyInstaller): PyQt window + embedded Viewer Contract hub
+  on one port (Engine.IO/Socket.IO + `.npy` GET).
+- **Optional Go CLI** builds the same mosaic math headless and can run a hub.
 - **Viewers** connect as Stream clients; no peer mesh.
 
 ## TIFF profile
 
-Classic TIFF only (magic 42). Single sample/pixel, uncompressed strips. Sample formats uint/int/float × 8/16/32-bit → float32 canvas. GeoTIFF tags ignored; placement from `.tfw` or LGL filename.
+Classic GeoTIFF / LGL naming and `.tfw` placement. Preview is a downscaled
+tile mosaic; export uses the selected tile rectangle and chosen dtype.

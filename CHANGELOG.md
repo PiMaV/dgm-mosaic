@@ -7,20 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
-
-- Product UI is the PyQt stage in suite `converters/` (`uv run dgm-mosaic`):
-  tile preview, rectangle select, drag-drop. Embedded browser UI removed.
-- Default Go build is CLI + hub; GUI stub points at converters. Optional Fyne
-  behind `-tags fyne` (needs system OpenGL/X11).
-
-### Added
-
-- Go CLI mosaic + Viewer Contract hub (port 5056 / token `dgm`).
-- Classic TIFF float/int reader without GDAL; LGL name + `.tfw` placement.
-
 ## [0.1.0] - 2026-09-18
 
 ### Added
 
-- Initial public product line as a WETTER Converted-path sidecar.
+- Product PyQt stage: drag-drop tile folder, mosaic preview, rectangle select,
+  Send to BLITZ / DONNER (port 5056 / token `dgm`).
+- PyInstaller one-file release via GitHub Actions (`DGM-v…-linux-x86_64`,
+  `DGM-v…-windows-x86_64.exe`).
+- Optional Go CLI mosaic + Viewer Contract hub.

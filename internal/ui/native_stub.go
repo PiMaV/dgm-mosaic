@@ -1,8 +1,7 @@
 //go:build !fyne
 
-// Package ui defaults to a stub when Fyne is not built in.
-// Product DnD GUI: sibling converters repo — `uv run dgm-mosaic`.
-// Optional native attempt: `go build -tags fyne` (needs OpenGL / X11 / Fyne deps).
+// Package ui stub when no native GUI is linked.
+// Product download: PyInstaller binary from GitHub Releases (DnD stage).
 package ui
 
 import (
@@ -21,13 +20,12 @@ type Options struct {
 	Prefill      string
 }
 
-// Run prints where the real stage lives. Hub may already be running in the background.
+// Run explains that the Go binary is CLI/hub; the product GUI is the release binary.
 func Run(pub *hub.Publisher, opts Options) {
 	_ = pub
-	fmt.Fprintln(os.Stderr, "DGM Go binary: CLI / hub only in this build (no embedded browser UI).")
-	fmt.Fprintln(os.Stderr, "Product UI — tile preview, rectangle select, drag-drop folder:")
-	fmt.Fprintln(os.Stderr, "  cd ../converters && uv run dgm-mosaic")
-	fmt.Fprintln(os.Stderr, "Optional Fyne (experimental): go build -tags fyne ./cmd/dgm-mosaic")
+	fmt.Fprintln(os.Stderr, "dgm-mosaic CLI: hub is up; this build has no window.")
+	fmt.Fprintln(os.Stderr, "Product UI (drag-drop + tile preview): download DGM from GitHub Releases,")
+	fmt.Fprintln(os.Stderr, "or: uv run dgm-mosaic")
 	if opts.Prefill != "" {
 		fmt.Fprintf(os.Stderr, "Prefill path was: %s\n", opts.Prefill)
 	}
