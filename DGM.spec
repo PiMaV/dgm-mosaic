@@ -13,6 +13,7 @@ a = Analysis(
         "flask_socketio",
         "PyQt6",
         "socketio",
+        "cv2",
         "dgm_mosaic",
         "dgm_mosaic.app",
         "dgm_mosaic.mosaic",
