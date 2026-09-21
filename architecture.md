@@ -29,4 +29,5 @@ flowchart LR
 
 LGL DGM GeoTIFFs are typically **tiled** float32. Placement from `.tfw` or LGL
 filename. Preview is a downscaled tile mosaic; export uses the selected tile
-rectangle and chosen dtype.
+rectangle and chosen dtype. Optional **bin** (block mean) then wrap as
+`(1, H, W)` for the Viewer Contract. Primary Stream client: BLITZ.

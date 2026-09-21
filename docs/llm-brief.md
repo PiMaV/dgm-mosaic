@@ -20,6 +20,10 @@ TIFF via `dgm_mosaic/tiffio.py` (uncompressed strips or tiles, float/int).
 - Heights: metres are authoritative. Formats only apply a **fixed** unit
   conversion (`u16dm` = ×10 dm from z0; `f32` = metres). Never stretch/auto-fit
   into the dtype. Large mosaics: default **f32**.
+- Export / Stream stack is always **`(1, H, W)`** (Viewer Contract). Optional
+  **bin** 1|2|4|8|16 = block-mean downsample before quantize (GUI default **2×**,
+  prominent radios).
+- Primary Stream client: **BLITZ**. DONNER shape-ok but no height/DEM source yet.
 - Wire: Socket.IO `send_file_message` + GET `/{token}?filename=…` → `.npy`.
 
 ## Don’t

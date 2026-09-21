@@ -8,6 +8,7 @@
 - [x] Selectable preview colormaps
 - [x] u16dm (fixed 1 dm/DN); Stream button; live selection size/points
 - [x] App icon + README screenshot + LGL DGM25 example link
+- [x] Stream/save always `(1, H, W)`; bin 1–16× block mean
 
 ## Next
 

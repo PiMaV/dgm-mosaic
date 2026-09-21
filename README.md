@@ -19,7 +19,9 @@ Drop a folder of DGM GeoTIFF tiles, preview the mosaic, select a rectangle,
 5. In BLITZ or DONNER → Stream: `http://127.0.0.1:5056`, token `dgm`.
 
 Heights stay in metres (`float32`). Optional **uint16** stores **decimetres**
-(fixed 0.1 m/DN). Output size and point count show under the preview.
+(fixed 0.1 m/DN). **Bin** (default **2×**, or 4/8/16× block mean) shrinks large
+mosaics. Output is always `(1, H, W)` for the WETTER Stream contract — open in
+**BLITZ**.
 
 **Example tiles:** LGL Baden-Württemberg
 [DGM25 GeoTIFF](https://opengeodata.lgl-bw.de/#/(sidenav:product/dgm025))

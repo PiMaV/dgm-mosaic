@@ -71,6 +71,7 @@ _MODES: tuple[tuple[DtypeMode, str], ...] = (
     ("u16dm", "uint16 decimetres (fixed 1 dm)"),
     ("u8step", "uint8 fixed step (metres)"),
 )
+_BIN_FACTORS: tuple[int, ...] = (1, 2, 4, 8, 16)
 
 
 class MosaicPublisher:
@@ -487,6 +488,36 @@ class DgmMosaicWindow(QMainWindow):
         v.addLayout(preview_row)
         self._set_legend()
 
+        bin_box = QGroupBox("Bin (downsample)")
+        bin_l = QVBoxLayout(bin_box)
+        bin_hint = QLabel(
+            "Block-mean before export — shrinks large mosaics. "
+            "Default 2× (half resolution, ~¼ of the pixels)."
+        )
+        bin_hint.setWordWrap(True)
+        bin_hint.setStyleSheet("color: #bbb;")
+        bin_l.addWidget(bin_hint)
+        bin_row = QHBoxLayout()
+        self.bin_group = QButtonGroup(self)
+        self.bin_buttons: dict[int, QRadioButton] = {}
+        for i, f in enumerate(_BIN_FACTORS):
+            if f == 1:
+                label = "1× full"
+            else:
+                label = f"{f}×"
+            btn = QRadioButton(label)
+            self.bin_group.addButton(btn, i)
+            self.bin_buttons[f] = btn
+            bin_row.addWidget(btn)
+        bin_row.addStretch(1)
+        bin_l.addLayout(bin_row)
+        self.bin_buttons[1].setToolTip("No downsample — full tile resolution.")
+        self.bin_buttons[2].setToolTip("Default: 2×2 block mean (~¼ pixels, pixel_m ×2).")
+        self.bin_buttons[4].setToolTip("4×4 block mean (~1/16 pixels).")
+        self.bin_buttons[8].setToolTip("8×8 block mean.")
+        self.bin_buttons[16].setToolTip("16×16 block mean — preview / tiny stream.")
+        v.addWidget(bin_box)
+
         fmt = QGroupBox("Format")
         fmt_l = QVBoxLayout(fmt)
         cols = QHBoxLayout()
@@ -535,6 +566,10 @@ class DgmMosaicWindow(QMainWindow):
         fmt_l.addLayout(cols)
         v.addWidget(fmt)
         self.mode_buttons["f32"].setChecked(True)
+        # Wire bin after mode_buttons exist (toggled → _refresh_sizes → _mode).
+        for btn in self.bin_buttons.values():
+            btn.toggled.connect(self._refresh_sizes)
+        self.bin_buttons[2].setChecked(True)
         self.mode_buttons["u16dm"].setToolTip(
             "Fixed: metres×10 → int dm. 751.3 m → 7513. Fails if relief > 6553.5 m — use f32."
         )
@@ -545,7 +580,9 @@ class DgmMosaicWindow(QMainWindow):
         if self._publisher is not None:
             connect = (
                 f"Stream hub: {self._publisher.connect_hint}\n"
-                "In BLITZ or DONNER → Stream → Connect (same Viewer Contract)."
+                "Primary: BLITZ → Stream → Connect. "
+                "Stack is always (1, H, W). "
+                "DONNER accepts the shape but has no height mode yet (counts only)."
             )
         else:
             connect = self._push_error or "Stream hub unavailable."
@@ -555,7 +592,9 @@ class DgmMosaicWindow(QMainWindow):
 
         self.send_btn = QPushButton("Stream")
         self.send_btn.setEnabled(False)
-        self.send_btn.setToolTip("Push the selected mosaic to the Stream hub (BLITZ / DONNER).")
+        self.send_btn.setToolTip(
+            "Push (1, H, W) mosaic to the Stream hub. Primary client: BLITZ."
+        )
         self.send_btn.clicked.connect(self._send)
         v.addWidget(self.send_btn)
 
@@ -611,6 +650,12 @@ class DgmMosaicWindow(QMainWindow):
                 return mode
         return "f32"
 
+    def _bin(self) -> int:
+        for factor, btn in self.bin_buttons.items():
+            if btn.isChecked():
+                return factor
+        return 2
+
     def _kwargs(self, output: Path | None = None) -> dict:
         kw: dict = {
             "input_path": self._folder,
@@ -618,6 +663,7 @@ class DgmMosaicWindow(QMainWindow):
             "step_m": float(self.step_m.value()),
             "ref": self.ref.currentText(),
             "tile_box": self.mosaic_view.tile_box(),
+            "bin": self._bin(),
         }
         if output is not None:
             kw["output_path"] = output
@@ -728,18 +774,22 @@ class DgmMosaicWindow(QMainWindow):
             return
         chosen = self._mode()
         box = self.mosaic_view.tile_box()
-        h, w = layout.shape_box(box)
+        bin_f = self._bin()
+        h, w = layout.shape_box(box, bin=bin_f)
         points = int(h) * int(w)
-        mb = fmt_mb(layout.nbytes_box(chosen, box))
+        mb = fmt_mb(layout.nbytes_box(chosen, box, bin=bin_f))
+        bin_note = "" if bin_f == 1 else f"  ·  bin {bin_f}×"
         self.export_label.setText(
-            f"Output: {w}×{h} px  ·  {points:,} points  ·  {mb} ({chosen})"
+            f"Output: (1, {h}, {w})  ·  {w}×{h} px  ·  {points:,} points  ·  "
+            f"{mb} ({chosen}){bin_note}"
         )
         lines = []
         for mode, label in _MODES:
             mark = "●" if mode == chosen else " "
-            mh, mw = layout.shape_box(box)
+            mh, mw = layout.shape_box(box, bin=bin_f)
             lines.append(
-                f"{mark} {mode:<10}  {mw}×{mh} px   {fmt_mb(layout.nbytes_box(mode, box))}"
+                f"{mark} {mode:<10}  {mw}×{mh} px   "
+                f"{fmt_mb(layout.nbytes_box(mode, box, bin=bin_f))}"
             )
         self.size_label.setText("\n".join(lines))
 
@@ -792,7 +842,7 @@ class DgmMosaicWindow(QMainWindow):
         hint = ""
         if self._publisher is not None:
             hint = (
-                f" Connect BLITZ or DONNER Stream to {self._publisher.connect_hint}, "
+                f" Connect BLITZ Stream to {self._publisher.connect_hint}, "
                 "then click Stream."
             )
         self.status.setText(f"Previews ready ({len(self._raw_thumbs)} tiles).{hint}")
@@ -818,6 +868,8 @@ class DgmMosaicWindow(QMainWindow):
         )
         self.norm_cb.setEnabled(not on)
         self.cmap.setEnabled(not on)
+        for btn in self.bin_buttons.values():
+            btn.setEnabled(not on)
         if status is not None:
             self.status.setText(status)
 
@@ -866,12 +918,20 @@ class DgmMosaicWindow(QMainWindow):
         self._publisher.set_stack(arr, push=True)
         mb = arr.nbytes / (1024 * 1024)
         mode = meta.get("mode")
+        if arr.ndim == 3:
+            _, h, w = arr.shape
+            shape_s = f"(1, {h}, {w})"
+        else:
+            h, w = arr.shape[:2]
+            shape_s = f"{h}×{w}"
+        bin_f = int(meta.get("bin") or 1)
+        bin_note = f", bin {bin_f}×" if bin_f != 1 else ""
         self.progress.hide()
         self._set_busy(False)
         self.status.setText(
-            f"Streaming {mode} {arr.shape[1]}×{arr.shape[0]} "
-            f"({arr.shape[1] * arr.shape[0]:,} points, {mb:.1f} MB).\n"
-            f"BLITZ / DONNER → Stream → {self._publisher.connect_hint}."
+            f"Streaming {mode} {shape_s} "
+            f"({w * h:,} points, {mb:.1f} MB{bin_note}).\n"
+            f"BLITZ → Stream → {self._publisher.connect_hint}."
         )
 
     def _on_saved(self, path: str) -> None:
@@ -917,6 +977,13 @@ def main() -> None:
     parser.add_argument("--ref", choices=("min", "mean"), default="min")
     parser.add_argument("--nodata", type=float, default=NODATA_DEFAULT)
     parser.add_argument("--z0", type=float, default=None)
+    parser.add_argument(
+        "--bin",
+        type=int,
+        default=1,
+        choices=_BIN_FACTORS,
+        help="Block-mean downsample factor before quantize (default 1)",
+    )
     args = parser.parse_args()
     if args.gui or args.input is None:
         sys.exit(run_gui(Path(args.input) if args.input else None))
@@ -929,6 +996,7 @@ def main() -> None:
             ref=args.ref,
             nodata=args.nodata,
             z0=args.z0,
+            bin=args.bin,
         )
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

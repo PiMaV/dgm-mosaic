@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-21
+
+### Added
+
+- **Bin** factor 1/2/4/8/16 (block mean) before quantize; GUI default **2×**
+  (own group with radios); CLI `--bin`. Sidecar `pixel_m` scales with the factor.
+
+### Changed
+
+- Stream / `.npy` always Viewer Contract **`(1, H, W)`** (`axes: THW`). Primary
+  client is **BLITZ**. DONNER accepts the shape but has no DEM/height mode yet.
+
 ## [0.2.0] - 2026-09-21
 
 ### Added

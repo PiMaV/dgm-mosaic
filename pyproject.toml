@@ -1,6 +1,6 @@
 [project]
 name = "dgm-mosaic"
-version = "0.2.0"
+version = "0.3.0"
 description = "DGM GeoTIFF mosaic stage for BLITZ and DONNER"
 readme = "README.md"
 requires-python = ">=3.12"

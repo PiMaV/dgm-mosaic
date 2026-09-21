@@ -413,14 +413,65 @@ BYTES_PER_PIXEL: dict[str, int] = {
 }
 
 
-def estimate_npy_bytes(height: int, width: int, mode: DtypeMode) -> int:
-    """Uncompressed .npy payload estimate (header ignored)."""
+def estimate_npy_bytes(
+    height: int,
+    width: int,
+    mode: DtypeMode,
+    *,
+    bin: int = 1,
+) -> int:
+    """Uncompressed .npy payload estimate (header ignored). Shape is (1,H,W)."""
     bpp = BYTES_PER_PIXEL[mode]
-    return int(height) * int(width) * bpp
+    b = max(1, int(bin))
+    h = int(height) // b
+    w = int(width) // b
+    return h * w * bpp
 
 
 def fmt_mb(nbytes: int) -> str:
     return f"{nbytes / (1024 * 1024):.1f} MB"
+
+
+def binned_hw(height: int, width: int, bin: int) -> tuple[int, int]:
+    """Output (H, W) after integer block binning (edges truncated)."""
+    b = max(1, int(bin))
+    return int(height) // b, int(width) // b
+
+
+def bin_mean(z: np.ndarray, factor: int) -> np.ndarray:
+    """Block-mean downsample; NaNs ignored per block. Factor 1 = copy.
+
+    Truncates to a multiple of ``factor`` on each axis (no partial edge blocks).
+    """
+    arr = np.asarray(z, dtype=np.float32)
+    if arr.ndim != 2:
+        raise ValueError(f"bin_mean expects 2D, got {arr.shape}")
+    f = int(factor)
+    if f < 1:
+        raise ValueError(f"bin factor must be >= 1, got {factor}")
+    if f == 1:
+        return np.array(arr, copy=True)
+    h, w = arr.shape
+    nh, nw = h // f, w // f
+    if nh < 1 or nw < 1:
+        raise ValueError(
+            f"bin={f} leaves empty grid from {h}×{w} (need at least {f}×{f} px)"
+        )
+    cropped = arr[: nh * f, : nw * f]
+    blocks = cropped.reshape(nh, f, nw, f)
+    with np.errstate(all="ignore"):
+        out = np.nanmean(blocks, axis=(1, 3))
+    return np.asarray(out, dtype=np.float32)
+
+
+def as_thw(arr: np.ndarray) -> np.ndarray:
+    """Viewer Contract stack: (H, W) → (1, H, W). Already 3D left as-is if (1,H,W)."""
+    a = np.ascontiguousarray(arr)
+    if a.ndim == 2:
+        return a[np.newaxis, ...]
+    if a.ndim == 3 and a.shape[0] == 1:
+        return a
+    raise ValueError(f"expected (H,W) or (1,H,W), got {a.shape}")
 
 
 @dataclass(frozen=True)
@@ -468,22 +519,33 @@ class MosaicLayout:
     regular: bool
     crs: str | None
 
-    def nbytes(self, mode: DtypeMode) -> int:
-        return estimate_npy_bytes(self.height, self.width, mode)
+    def nbytes(self, mode: DtypeMode, *, bin: int = 1) -> int:
+        return estimate_npy_bytes(self.height, self.width, mode, bin=bin)
 
-    def nbytes_box(self, mode: DtypeMode, box: tuple[int, int, int, int]) -> int:
-        h, w = self.shape_box(box)
-        return estimate_npy_bytes(h, w, mode)
+    def nbytes_box(
+        self,
+        mode: DtypeMode,
+        box: tuple[int, int, int, int],
+        *,
+        bin: int = 1,
+    ) -> int:
+        h, w = self.shape_box(box, bin=1)
+        return estimate_npy_bytes(h, w, mode, bin=bin)
 
-    def shape_box(self, box: tuple[int, int, int, int]) -> tuple[int, int]:
-        """Pixel (height, width) of the selected tile rectangle."""
+    def shape_box(
+        self,
+        box: tuple[int, int, int, int],
+        *,
+        bin: int = 1,
+    ) -> tuple[int, int]:
+        """Pixel (height, width) of the selected tile rectangle after binning."""
         if not self.cells:
             return 0, 0
         sample = next(iter(self.cells.values()))
         r0, c0, r1, c1 = norm_tile_box(box, self.tile_rows, self.tile_cols)
         h = (r1 - r0 + 1) * sample.height
         w = (c1 - c0 + 1) * sample.width
-        return h, w
+        return binned_hw(h, w, bin)
 
 
 def stub_tile(path: Path) -> TileStub:
@@ -817,8 +879,12 @@ def mosaic_array(
     nodata: float = NODATA_DEFAULT,
     z0: float | None = None,
     tile_box: tuple[int, int, int, int] | None = None,
+    bin: int = 1,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    """Build the quantized mosaic in memory (no disk write)."""
+    """Build the quantized mosaic in memory (no disk write).
+
+    Returns a Viewer Contract stack ``(1, H, W)``.
+    """
     input_path = Path(input_path)
     layout = inspect_folder(input_path)
     if tile_box is None:
@@ -832,21 +898,35 @@ def mosaic_array(
                 paths.append(stub.path)
     tiles = [load_tile(p, nodata=nodata) for p in paths]
     mosaic, geo = mosaic_for_tile_box(tiles, layout, (r0, c0, r1, c1))
+    bin_f = max(1, int(bin))
+    if bin_f != 1:
+        mosaic = bin_mean(mosaic, bin_f)
+        geo = {
+            **geo,
+            "pixel_m": float(geo["pixel_m"]) * bin_f,
+            "shape_hw": [int(mosaic.shape[0]), int(mosaic.shape[1])],
+            "bin": bin_f,
+        }
+    else:
+        geo = {**geo, "bin": 1}
     quantized = quantize(mosaic, mode, step_m=step_m, ref=ref, z0=z0)
+    stack = as_thw(quantized.array)
     meta = {
         "format": "wetter.dgm_mosaic.v1",
         "layout": "row0_north_col0_west",
+        "axes": "THW",
+        "shape": [int(x) for x in stack.shape],
         "source": str(input_path.resolve()),
         **geo,
         **quantized.meta,
-        "nbytes": int(quantized.array.nbytes),
+        "nbytes": int(stack.nbytes),
     }
     n_clip = int(quantized.meta.get("clipped_pixels") or 0)
     if n_clip:
         sug = quantized.meta.get("suggested_step_m")
         extra = f" (try --step-m {sug:.3g})" if sug else ""
         print(f"warning: {n_clip} pixels clipped to 1..255{extra}")
-    return quantized.array, meta
+    return stack, meta
 
 
 def convert(
@@ -859,6 +939,7 @@ def convert(
     nodata: float = NODATA_DEFAULT,
     z0: float | None = None,
     tile_box: tuple[int, int, int, int] | None = None,
+    bin: int = 1,
 ) -> Path:
     arr, meta = mosaic_array(
         input_path,
@@ -868,6 +949,7 @@ def convert(
         nodata=nodata,
         z0=z0,
         tile_box=tile_box,
+        bin=bin,
     )
     out = Path(output_path) if output_path else default_output_path(Path(input_path))
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -885,8 +967,11 @@ def _report(
     arr: np.ndarray,
     meta: dict[str, Any],
 ) -> None:
-    h, w = arr.shape[:2]
-    print(f"Mosaic {w}×{h} px  ({meta.get('pixel_m'):g} m)  {npy}")
+    if arr.ndim == 3:
+        _, h, w = arr.shape
+    else:
+        h, w = arr.shape[:2]
+    print(f"Mosaic {w}×{h} px  ({meta.get('pixel_m'):g} m)  shape {tuple(arr.shape)}  {npy}")
     print(f"  tiles: {len(meta.get('tiles') or [])}")
     if meta.get("west") is not None:
         print(
@@ -895,6 +980,8 @@ def _report(
         )
     if meta.get("crs"):
         print(f"  CRS: {meta['crs']}")
+    if meta.get("bin", 1) not in (1, None):
+        print(f"  bin: {meta['bin']}× block mean")
     if meta.get("overlap_pixels"):
         print(
             f"  warning: {meta['overlap_pixels']} overlapping valid pixels "

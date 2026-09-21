@@ -10,6 +10,8 @@ import numpy as np
 from dgm_mosaic.mosaic import (
     Tile,
     TileStub,
+    as_thw,
+    bin_mean,
     convert,
     diverging_rgb,
     estimate_npy_bytes,
@@ -230,6 +232,34 @@ class QuantizeTests(unittest.TestCase):
         q = quantize(z, "f32")
         self.assertTrue(np.isnan(q.array[0, 1]))
         self.assertAlmostEqual(float(q.array[0, 0]), 1.5)
+
+
+class BinThwTests(unittest.TestCase):
+    def test_bin_mean_2x(self) -> None:
+        z = np.array(
+            [[1.0, 3.0, 5.0, 7.0], [2.0, 4.0, 6.0, 8.0]],
+            dtype=np.float32,
+        )
+        out = bin_mean(z, 2)
+        self.assertEqual(out.shape, (1, 2))
+        self.assertAlmostEqual(float(out[0, 0]), 2.5)
+        self.assertAlmostEqual(float(out[0, 1]), 6.5)
+
+    def test_bin_mean_truncates_edge(self) -> None:
+        z = np.arange(15, dtype=np.float32).reshape(3, 5)
+        out = bin_mean(z, 2)
+        self.assertEqual(out.shape, (1, 2))
+
+    def test_as_thw(self) -> None:
+        z = np.ones((4, 5), dtype=np.float32)
+        stack = as_thw(z)
+        self.assertEqual(stack.shape, (1, 4, 5))
+        again = as_thw(stack)
+        self.assertEqual(again.shape, (1, 4, 5))
+
+    def test_estimate_with_bin(self) -> None:
+        self.assertEqual(estimate_npy_bytes(4000, 4000, "f32", bin=4), 1000 * 1000 * 4)
+        self.assertEqual(estimate_npy_bytes(4000, 4000, "u16dm", bin=4), 1000 * 1000 * 2)
 
 
 class ThumbTests(unittest.TestCase):
