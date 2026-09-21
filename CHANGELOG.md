@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- Go CLI binary no longer built or attached on GitHub Releases (product path is
+  the PyQt `DGM` binary only).
+
 ## [0.3.0] - 2026-09-21
 
 ### Added

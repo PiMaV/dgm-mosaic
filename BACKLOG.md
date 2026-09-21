@@ -12,7 +12,7 @@
 
 ## Next
 
-- [ ] Demote Go CLI in release assets if still unused
+- [x] Demote Go CLI in release assets if still unused
 - [ ] Landing / suite docs: link once the new binary is verified
 
 ## Parked elsewhere
