@@ -126,8 +126,8 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(layout.holes, 0)
         self.assertEqual(layout.cells[(0, 0)].label_km, "505_5365")
         self.assertEqual(layout.cells[(1, 1)].label_km, "506_5364")
-        self.assertEqual(layout.nbytes("u16cm"), 8000 * 8000 * 2)
-        self.assertEqual(estimate_npy_bytes(8000, 8000, "u8stretch"), 64_000_000)
+        self.assertEqual(layout.nbytes("u16dm"), 8000 * 8000 * 2)
+        self.assertEqual(estimate_npy_bytes(8000, 8000, "u8step"), 64_000_000)
         self.assertEqual(layout.crs, "EPSG:25832")
 
     def test_hole_counted(self) -> None:
@@ -182,34 +182,48 @@ class BoxMosaicTests(unittest.TestCase):
         ]
         mosaic, _info = mosaic_for_tile_box(tiles, layout, (0, 0, 0, 0))
         np.testing.assert_array_equal(mosaic, c)
-        self.assertEqual(layout.nbytes_box("u16cm", (0, 0, 0, 0)), 2 * 2 * 2)
+        self.assertEqual(layout.nbytes_box("u16dm", (0, 0, 0, 0)), 2 * 2 * 2)
 
 
 class QuantizeTests(unittest.TestCase):
-    def test_u16cm_roundtrip(self) -> None:
-        z = np.array([[398.726, 446.998], [np.nan, 410.0]], dtype=np.float32)
-        q = quantize(z, "u16cm")
+    def test_u16dm_roundtrip(self) -> None:
+        z = np.array([[398.7, 447.0], [np.nan, 410.0]], dtype=np.float32)
+        q = quantize(z, "u16dm")
         self.assertEqual(q.array.dtype, np.uint16)
         self.assertEqual(int(q.array[1, 0]), 0)
         z0 = float(q.meta["z0_m"])
-        recon = z0 + q.array.astype(np.float64) * 0.01
-        self.assertAlmostEqual(recon[0, 0], 398.73, places=2)
-        self.assertAlmostEqual(recon[0, 1], 447.00, places=2)
+        scale = float(q.meta["scale_m"])
+        self.assertEqual(scale, 0.1)
+        recon = z0 + q.array.astype(np.float64) * scale
+        self.assertAlmostEqual(recon[0, 0], 398.7, places=1)
+        self.assertAlmostEqual(recon[0, 1], 447.0, places=1)
         self.assertGreater(int(q.array[0, 0]), 0)
 
-    def test_u8stretch_uses_1_255(self) -> None:
-        z = np.array([[10.0, 20.0], [np.nan, 10.0]], dtype=np.float32)
-        q = quantize(z, "u8stretch")
-        self.assertEqual(int(q.array[0, 0]), 1)
-        self.assertEqual(int(q.array[0, 1]), 255)
-        self.assertEqual(int(q.array[1, 0]), 0)
+    def test_u16dm_751_3_is_7513(self) -> None:
+        z = np.array([[751.3]], dtype=np.float32)
+        q = quantize(z, "u16dm", z0=0.0)
+        self.assertEqual(int(q.array[0, 0]), 7513)
+        self.assertEqual(float(q.meta["scale_m"]), 0.1)
+        self.assertEqual(q.meta["unit"], "dm")
+        recon = 0.0 + 7513 * 0.1
+        self.assertAlmostEqual(recon, 751.3, places=1)
 
-    def test_u8step_clips_and_counts(self) -> None:
+    def test_u16dm_no_auto_scale(self) -> None:
+        # Relief larger than 6553.5 m from z0=0
+        z = np.array([[0.0, 7000.0]], dtype=np.float32)
+        with self.assertRaises(ValueError) as ctx:
+            quantize(z, "u16dm", z0=0.0)
+        self.assertIn("f32", str(ctx.exception))
+        self.assertIn("not rescale", str(ctx.exception))
+
+    def test_u8step_no_silent_clip(self) -> None:
         z = np.linspace(0.0, 100.0, 20, dtype=np.float32).reshape(4, 5)
-        q = quantize(z, "u8step", step_m=0.25, ref="min")
-        self.assertGreater(int(q.meta["clipped_pixels"]), 0)
+        with self.assertRaises(ValueError) as ctx:
+            quantize(z, "u8step", step_m=0.25, ref="min")
+        self.assertIn("f32", str(ctx.exception))
+        q = quantize(z, "u8step", step_m=0.5, ref="min")
         self.assertEqual(q.array.min(), 1)
-        self.assertEqual(q.array.max(), 255)
+        self.assertLessEqual(int(q.array.max()), 255)
 
     def test_f32_keeps_nan(self) -> None:
         z = np.array([[1.5, np.nan]], dtype=np.float32)
@@ -222,7 +236,7 @@ class ThumbTests(unittest.TestCase):
     def test_minmax_unit_and_diverging(self) -> None:
         a = np.array([[10.0, 20.0], [10.0, 20.0]], dtype=np.float32)
         b = np.array([[10.0, 20.0], [np.nan, 15.0]], dtype=np.float32)
-        out = float_thumbs_to_unit({"a": a, "b": b})
+        out = float_thumbs_to_unit({"a": a, "b": b}, per_tile=False)
         self.assertAlmostEqual(float(out["a"][0, 0]), 0.0)
         self.assertAlmostEqual(float(out["a"][0, 1]), 1.0)
         self.assertTrue(np.isnan(out["b"][1, 0]))
@@ -234,6 +248,34 @@ class ThumbTests(unittest.TestCase):
         np.testing.assert_array_equal(red, [255, 0, 0])
         hole = diverging_rgb(np.array([[np.nan]], dtype=np.float32))[0, 0]
         np.testing.assert_array_equal(hole, [0, 0, 0])
+
+    def test_per_tile_normalize(self) -> None:
+        low = np.array([[0.0, 1.0]], dtype=np.float32)
+        high = np.array([[100.0, 200.0]], dtype=np.float32)
+        out = float_thumbs_to_unit({"low": low, "high": high}, per_tile=True)
+        self.assertAlmostEqual(float(out["low"][0, 0]), 0.0)
+        self.assertAlmostEqual(float(out["low"][0, 1]), 1.0)
+        self.assertAlmostEqual(float(out["high"][0, 0]), 0.0)
+        self.assertAlmostEqual(float(out["high"][0, 1]), 1.0)
+        global_out = float_thumbs_to_unit({"low": low, "high": high}, per_tile=False)
+        self.assertAlmostEqual(float(global_out["high"][0, 0]), 0.5)
+
+
+class TiffIoTests(unittest.TestCase):
+    def test_read_sample_dgm_tile(self) -> None:
+        sample = Path(
+            "/home/pm/Cursor/WETTER-Suite/datasets/Geo_Karte/Pfaffenweiler"
+            "/dgm025_32_456_5320_1_bw_2022.tif"
+        )
+        if not sample.is_file():
+            self.skipTest("sample DGM TIFF not on disk")
+        from dgm_mosaic.tiffio import peek_hw, read_float32
+
+        h, w = peek_hw(sample)
+        arr = read_float32(sample)
+        self.assertEqual(arr.shape, (h, w))
+        self.assertEqual(arr.dtype, np.float32)
+        self.assertTrue(np.isfinite(arr).any())
 
 
 class ConvertStubTests(unittest.TestCase):

@@ -10,13 +10,13 @@ import (
 func Quantize(z []float32, h, w int, opts Options) (npy.Array, map[string]any, error) {
 	mode := opts.Mode
 	if mode == "" {
-		mode = ModeU16cm
+		mode = ModeF32
 	}
 	switch mode {
-	case ModeU16cm:
-		return quantizeU16cm(z, h, w, opts.Z0)
+	case ModeU16dm:
+		return quantizeU16dm(z, h, w, opts.Z0)
 	case ModeU8stretch:
-		return quantizeU8stretch(z, h, w)
+		return npy.Array{}, nil, fmt.Errorf("u8stretch removed: it remapped heights — use f32 or u8step")
 	case ModeU8step:
 		step := opts.StepM
 		if step <= 0 {
@@ -74,7 +74,7 @@ func nanMinMax(z []float32, m []bool) (float64, float64) {
 	return minV, maxV
 }
 
-func quantizeU16cm(z []float32, h, w int, z0 float64) (npy.Array, map[string]any, error) {
+func quantizeU16dm(z []float32, h, w int, z0 float64) (npy.Array, map[string]any, error) {
 	m := validMask(z)
 	if !hasValid(m) {
 		return npy.Array{}, nil, fmt.Errorf("mosaic has no valid pixels")
@@ -85,53 +85,49 @@ func quantizeU16cm(z []float32, h, w int, z0 float64) (npy.Array, map[string]any
 		z0m = math.Floor(zMin)
 	}
 	out := make([]uint16, len(z))
-	cm := make([]float64, len(z))
+	dm := make([]float64, len(z))
 	for i, ok := range m {
 		if !ok {
 			continue
 		}
-		cm[i] = math.Round((float64(z[i]) - z0m) * 100.0)
+		dm[i] = math.Round((float64(z[i]) - z0m) * 10.0)
 	}
 	needBump := false
 	for i, ok := range m {
-		if ok && cm[i] < 1 {
+		if ok && dm[i] < 1 {
 			needBump = true
 			break
 		}
 	}
 	if needBump {
-		z0m -= 1
+		z0m -= 0.1
 		for i, ok := range m {
 			if !ok {
 				continue
 			}
-			cm[i] = math.Round((float64(z[i]) - z0m) * 100.0)
+			dm[i] = math.Round((float64(z[i]) - z0m) * 10.0)
 		}
 	}
 	for i, ok := range m {
-		if ok && cm[i] > 65535 {
+		if ok && (dm[i] < 1 || dm[i] > 65535) {
 			relief := zMax - z0m
-			return npy.Array{}, nil, fmt.Errorf("u16cm overflow: relief %.1f m from z0=%g exceeds 655.35 m", relief, z0m)
+			return npy.Array{}, nil, fmt.Errorf(
+				"u16dm: relief %.1f m from z0=%g does not fit fixed 1 dm/DN (max 6553.5 m). Use f32 — do not rescale heights to fit uint16",
+				relief, z0m,
+			)
 		}
 	}
 	for i, ok := range m {
 		if !ok {
 			continue
 		}
-		v := cm[i]
-		if v < 1 {
-			v = 1
-		}
-		if v > 65535 {
-			v = 65535
-		}
-		out[i] = uint16(v)
+		out[i] = uint16(dm[i])
 	}
 	meta := map[string]any{
-		"mode": "u16cm", "dtype": "uint16", "nodata": 0,
-		"z0_m": z0m, "scale_m": 0.01, "z_min_m": zMin, "z_max_m": zMax,
-		"clipped_pixels": 0,
-		"reconstruct":    "z_m = z0_m + pixel * scale_m  (pixel 0 = nodata)",
+		"mode": "u16dm", "dtype": "uint16", "nodata": 0,
+		"z0_m": z0m, "scale_m": 0.1, "z_min_m": zMin, "z_max_m": zMax,
+		"clipped_pixels": 0, "unit": "dm",
+		"reconstruct": "z_m = z0_m + pixel * scale_m  (pixel 0 = nodata)",
 	}
 	return npy.FromUint16LE([]int{h, w}, out), meta, nil
 }
@@ -202,7 +198,7 @@ func quantizeU8step(z []float32, h, w int, stepM float64, ref RefMode) (npy.Arra
 	var reconstruct string
 	z0m := zRef
 	if ref == RefMin {
-		reconstruct = "z_m ≈ z0_m + (pixel - 1) * scale_m  (pixel 0 = nodata)"
+		reconstruct = "z_m = z0_m + (pixel - 1) * scale_m  (pixel 0 = nodata)"
 		for i, ok := range m {
 			if !ok {
 				continue
@@ -211,16 +207,13 @@ func quantizeU8step(z []float32, h, w int, stepM float64, ref RefMode) (npy.Arra
 			if raw < 1 || raw > 255 {
 				nClip++
 			}
-			if raw < 1 {
-				raw = 1
+			out[i] = uint8(raw) // may be wrong if clip — checked below
+			if raw >= 1 && raw <= 255 {
+				out[i] = uint8(raw)
 			}
-			if raw > 255 {
-				raw = 255
-			}
-			out[i] = uint8(raw)
 		}
 	} else {
-		reconstruct = "z_m ≈ z0_m + (pixel - 128) * scale_m  (pixel 0 = nodata)"
+		reconstruct = "z_m = z0_m + (pixel - 128) * scale_m  (pixel 0 = nodata)"
 		for i, ok := range m {
 			if !ok {
 				continue
@@ -229,13 +222,9 @@ func quantizeU8step(z []float32, h, w int, stepM float64, ref RefMode) (npy.Arra
 			if raw < 1 || raw > 255 {
 				nClip++
 			}
-			if raw < 1 {
-				raw = 1
+			if raw >= 1 && raw <= 255 {
+				out[i] = uint8(raw)
 			}
-			if raw > 255 {
-				raw = 255
-			}
-			out[i] = uint8(raw)
 		}
 	}
 	relief := zMax - zMin
@@ -243,10 +232,16 @@ func quantizeU8step(z []float32, h, w int, stepM float64, ref RefMode) (npy.Arra
 	if relief > 0 {
 		suggested = relief / 254.0
 	}
+	if nClip > 0 {
+		return npy.Array{}, nil, fmt.Errorf(
+			"u8step: %d pixel(s) outside 1…255 at step %g m (relief %.1f m). Increase step (e.g. ≥ %.3f m) or use f32 — heights are not rescaled to fit",
+			nClip, stepM, relief, suggested,
+		)
+	}
 	meta := map[string]any{
 		"mode": "u8step", "dtype": "uint8", "nodata": 0, "ref": string(ref),
 		"z0_m": z0m, "scale_m": stepM, "z_min_m": zMin, "z_max_m": zMax,
-		"clipped_pixels": nClip, "suggested_step_m": suggested, "reconstruct": reconstruct,
+		"clipped_pixels": 0, "reconstruct": reconstruct,
 	}
 	return npy.FromUint8([]int{h, w}, out), meta, nil
 }

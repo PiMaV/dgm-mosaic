@@ -1,34 +1,25 @@
 # DGM mosaic
 
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-[![Status](https://img.shields.io/badge/status-not%20yet%20functional-orange)](BACKLOG.md)
 
 Part of [WETTER](https://wetter.mess.engineering).
 
-> **Not yet functional (v0.1.0).** The GitHub release binary and the default
-> dependency set omit OpenCV, so **tile preview / GeoTIFF load fails** at
-> runtime. Treat this as an early spike on its own repo — not a usable tool.
-> See [BACKLOG.md](BACKLOG.md).
+Drop a folder of DGM GeoTIFF tiles, preview the mosaic, drag a rectangle of
+tiles, **Send to BLITZ** or DONNER.
 
-Intended product: drop a folder of DGM GeoTIFF tiles, preview the mosaic,
-drag a rectangle of tiles, **Send to BLITZ** or DONNER
-(`http://127.0.0.1:5056`, token `dgm`).
+**Download:** [latest release](https://github.com/PiMaV/dgm-mosaic/releases/latest)
+— `DGM-vX.Y.Z-linux-x86_64` or `DGM-vX.Y.Z-windows-x86_64.exe`.
 
-## After it works
+1. Download the file for your system.
+2. Linux: `chmod +x DGM-vX.Y.Z-linux-x86_64`
+3. Run it. Drop a tile folder (or Browse…).
+4. Wait for the preview bar to finish, pick tiles, **Send to BLITZ**.
+5. In BLITZ → Stream: `http://127.0.0.1:5056`, token `dgm`.
 
-Download the release binary. Linux: `chmod +x`, then run. Drop a tile folder
-(Browse is fallback only).
+Optional: **Normalize whole mosaic** (shared height scale; uncheck for per-tile)
+and colormap (blue–white–red, grayscale, terrain, plasma, viridis). Drag a
+rectangle on the mosaic to select tiles; **Stream** pushes to BLITZ or DONNER.
 
-## Develop (local)
+GNU GPL v3. See [LICENSE](LICENSE).
 
-```bash
-uv sync --group dev
-uv run pytest -q
-uv run dgm-mosaic
-```
-
-OpenCV (`opencv-python-headless`) must be installed for TIFF read/preview.
-
-The Go CLI under `cmd/` is a headless experiment only — not the product path.
-
-Agents: [`docs/llm-brief.md`](docs/llm-brief.md).
+For agents: [`docs/llm-brief.md`](docs/llm-brief.md).

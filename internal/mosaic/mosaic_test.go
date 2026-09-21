@@ -119,43 +119,33 @@ func TestLayout2x2(t *testing.T) {
 	if layout.Cells[[2]int{0, 0}].LabelKm() != "505_5365" {
 		t.Fatal(layout.Cells[[2]int{0, 0}].LabelKm())
 	}
-	if layout.NBytes(mosaic.ModeU16cm) != 8000*8000*2 {
-		t.Fatal(layout.NBytes(mosaic.ModeU16cm))
+	if layout.NBytes(mosaic.ModeU16dm) != 8000*8000*2 {
+		t.Fatal(layout.NBytes(mosaic.ModeU16dm))
 	}
 	if layout.CRS != "EPSG:25832" {
 		t.Fatal(layout.CRS)
 	}
 }
 
-func TestQuantizeU16cm(t *testing.T) {
-	z := []float32{398.726, 446.998, float32(math.NaN()), 410.0}
-	arr, meta, err := mosaic.Quantize(z, 2, 2, mosaic.Options{Mode: mosaic.ModeU16cm, Z0: math.NaN()})
+func TestQuantizeU16dm(t *testing.T) {
+	z := []float32{751.3}
+	arr, meta, err := mosaic.Quantize(z, 1, 1, mosaic.Options{Mode: mosaic.ModeU16dm, Z0: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if arr.DType != "<u2" {
 		t.Fatal(arr.DType)
 	}
-	// decode first pixel
 	v0 := uint16(arr.Data[0]) | uint16(arr.Data[1])<<8
-	if v0 == 0 {
-		t.Fatal("nodata at valid")
+	if v0 != 7513 {
+		t.Fatalf("want 7513 dm, got %d", v0)
 	}
-	z0 := meta["z0_m"].(float64)
-	recon := z0 + float64(v0)*0.01
-	if math.Abs(recon-398.73) > 0.02 {
+	if meta["scale_m"].(float64) != 0.1 {
+		t.Fatal(meta["scale_m"])
+	}
+	recon := float64(v0) * 0.1
+	if math.Abs(recon-751.3) > 0.05 {
 		t.Fatalf("recon %g", recon)
-	}
-}
-
-func TestQuantizeU8stretch(t *testing.T) {
-	z := []float32{10, 20, float32(math.NaN()), 10}
-	arr, _, err := mosaic.Quantize(z, 2, 2, mosaic.Options{Mode: mosaic.ModeU8stretch})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if arr.Data[0] != 1 || arr.Data[1] != 255 || arr.Data[2] != 0 {
-		t.Fatalf("%v", arr.Data)
 	}
 }
 

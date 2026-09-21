@@ -22,7 +22,7 @@ const (
 	ThumbEdge     = 192
 )
 
-// Z0Unset means auto floor(zmin) for u16cm.
+// Z0Unset means auto floor(zmin) for u16dm.
 var Z0Unset = math.NaN()
 
 
@@ -31,7 +31,7 @@ var reDGM = regexp.MustCompile(`(?i)^dgm(?P<res>\d+)_(?P<zone>\d+)_(?P<e>\d+)_(?
 type Mode string
 
 const (
-	ModeU16cm      Mode = "u16cm"
+	ModeU16dm      Mode = "u16dm"
 	ModeU8stretch  Mode = "u8stretch"
 	ModeU8step     Mode = "u8step"
 	ModeF32        Mode = "f32"
@@ -132,9 +132,9 @@ func (l *MosaicLayout) NBytesBox(mode Mode, box [4]int) int {
 func EstimateNPYBytes(h, w int, mode Mode) int {
 	bpp := 4
 	switch mode {
-	case ModeU16cm:
+	case ModeU16dm:
 		bpp = 2
-	case ModeU8stretch, ModeU8step:
+	case ModeU8step:
 		bpp = 1
 	}
 	return h * w * bpp

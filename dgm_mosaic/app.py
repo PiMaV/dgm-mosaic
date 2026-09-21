@@ -23,6 +23,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -32,6 +33,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QVBoxLayout,
@@ -40,6 +42,8 @@ from PyQt6.QtWidgets import (
 
 from dgm_mosaic.mosaic import (
     NODATA_DEFAULT,
+    COLORMAP_LABELS,
+    ColormapName,
     DtypeMode,
     MosaicLayout,
     compose_preview_rgb,
@@ -61,10 +65,9 @@ DEFAULT_TOKEN = "dgm"
 STACK_NAME = "mosaic.npy"
 
 _MODES: tuple[tuple[DtypeMode, str], ...] = (
-    ("u16cm", "uint16 centimetres (default)"),
-    ("u8stretch", "uint8 min…max → 1…255"),
-    ("u8step", "uint8 fixed step"),
-    ("f32", "float32 metres"),
+    ("f32", "float32 metres (exact)"),
+    ("u16dm", "uint16 decimetres (fixed 1 dm)"),
+    ("u8step", "uint8 fixed step (metres)"),
 )
 
 
@@ -196,24 +199,24 @@ class _Work(QObject):
 
 
 class _ThumbWork(QObject):
-    finished = pyqtSignal(int, object)
+    progress = pyqtSignal(int, int, str)  # done, total, name
+    finished = pyqtSignal(int, object)  # gen, raw thumbs dict
     failed = pyqtSignal(int, str)
 
-    def __init__(self, gen: int, cells: dict, rows: int, cols: int) -> None:
+    def __init__(self, gen: int, cells: dict) -> None:
         super().__init__()
         self.gen = gen
         self.cells = cells
-        self.rows = rows
-        self.cols = cols
 
     def run(self) -> None:
         try:
             raw = {}
-            for key, path in self.cells.items():
+            total = max(len(self.cells), 1)
+            for i, (key, path) in enumerate(self.cells.items(), start=1):
+                self.progress.emit(i - 1, total, Path(path).name)
                 raw[key] = tile_thumbnail(path)
-            unit = float_thumbs_to_unit(raw)
-            rgb = compose_preview_rgb(self.rows, self.cols, unit)
-            self.finished.emit(self.gen, rgb)
+                self.progress.emit(i, total, Path(path).name)
+            self.finished.emit(self.gen, raw)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(self.gen, str(exc))
 
@@ -307,6 +310,7 @@ class MosaicView(QWidget):
         self._drag = tile
         self._box = (tile[0], tile[1], tile[0], tile[1])
         self.update()
+        self.selectionChanged.emit()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if self._drag is None:
@@ -322,6 +326,7 @@ class MosaicView(QWidget):
         if box != self._box:
             self._box = box
             self.update()
+            self.selectionChanged.emit()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() != Qt.MouseButton.LeftButton:
@@ -337,7 +342,11 @@ class MosaicView(QWidget):
         dest = self._image_rect()
         if self._pixmap is None or dest.isEmpty():
             p.setPen(QColor("#888"))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Drop a tile folder")
+            p.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "Drop a tile folder\n\nThen drag a rectangle on the mosaic to select tiles",
+            )
             return
         p.drawPixmap(dest, self._pixmap)
         cell_w = dest.width() / self._cols
@@ -392,8 +401,10 @@ class DgmMosaicWindow(QMainWindow):
         self._thumb_thread: QThread | None = None
         self._thumb_worker: _ThumbWork | None = None
         self._thumb_gen = 0
+        self._raw_thumbs: dict | None = None
         self._publisher: MosaicPublisher | None = None
         self._push_error: str | None = None
+        self._loading = False
         try:
             self._publisher = MosaicPublisher()
             self._publisher.start_background()
@@ -431,7 +442,9 @@ class DgmMosaicWindow(QMainWindow):
         v.addWidget(east)
 
         sel_row = QHBoxLayout()
-        self.sel_label = QLabel("Drag a rectangle of tiles to export.")
+        self.sel_label = QLabel(
+            "Drag rectangle on the mosaic to select tiles (drag to grow/shrink)."
+        )
         self.sel_label.setWordWrap(True)
         all_btn = QPushButton("All tiles")
         all_btn.clicked.connect(self.mosaic_view.select_all)
@@ -439,58 +452,107 @@ class DgmMosaicWindow(QMainWindow):
         sel_row.addWidget(all_btn)
         v.addLayout(sel_row)
 
+        self.export_label = QLabel("Output: —")
+        self.export_label.setWordWrap(True)
+        self.export_label.setStyleSheet("font-weight: 600;")
+        v.addWidget(self.export_label)
+
         legend_row = QHBoxLayout()
         self.legend_img = QLabel()
         self.legend_img.setFixedHeight(14)
-        self._set_legend()
-        legend_cap = QLabel("low  blue   ·   mid  white   ·   high  red")
-        legend_cap.setStyleSheet("color: #bbb; font-size: 11px;")
+        self.legend_cap = QLabel("low → high")
+        self.legend_cap.setStyleSheet("color: #bbb; font-size: 11px;")
         legend_row.addWidget(self.legend_img, 1)
-        legend_row.addWidget(legend_cap)
+        legend_row.addWidget(self.legend_cap)
         v.addLayout(legend_row)
 
-        fmt = QGroupBox("Format  (size = selected tiles)")
+        preview_row = QHBoxLayout()
+        self.norm_cb = QCheckBox("Normalize whole mosaic (shared height scale)")
+        self.norm_cb.setChecked(True)
+        self.norm_cb.setToolTip(
+            "On: one min–max across all tiles. Off: each tile scaled alone."
+        )
+        self.norm_cb.toggled.connect(self._on_preview_opts)
+        self.cmap = QComboBox()
+        for key, label in COLORMAP_LABELS:
+            self.cmap.addItem(label, key)
+        self.cmap.currentIndexChanged.connect(self._on_preview_opts)
+        preview_row.addWidget(self.norm_cb)
+        preview_row.addWidget(QLabel("Colormap"))
+        preview_row.addWidget(self.cmap)
+        preview_row.addStretch(1)
+        v.addLayout(preview_row)
+        self._set_legend()
+
+        fmt = QGroupBox("Format")
         fmt_l = QVBoxLayout(fmt)
-        self.step_m = QDoubleSpinBox()
-        self.step_m.setRange(0.01, 50.0)
-        self.step_m.setDecimals(3)
-        self.step_m.setValue(0.25)
-        self.step_m.setSuffix(" m")
-        self.ref = QComboBox()
-        self.ref.addItems(["min", "mean"])
-        self.size_label = QLabel()
+        cols = QHBoxLayout()
+        left = QVBoxLayout()
+        right = QVBoxLayout()
+
         self.mode_group = QButtonGroup(self)
         self.mode_buttons: dict[DtypeMode, QRadioButton] = {}
         for i, (mode, label) in enumerate(_MODES):
             btn = QRadioButton(label)
             self.mode_group.addButton(btn, i)
             self.mode_buttons[mode] = btn
-            fmt_l.addWidget(btn)
+            left.addWidget(btn)
             btn.toggled.connect(self._refresh_sizes)
+
+        self.step_m = QDoubleSpinBox()
+        self.step_m.setRange(0.01, 50.0)
+        self.step_m.setDecimals(3)
+        self.step_m.setValue(0.25)
+        self.step_m.setSuffix(" m")
+        self.step_m.setMaximumWidth(110)
+        self.ref = QComboBox()
+        self.ref.addItems(["min", "mean"])
+        self.ref.setMaximumWidth(80)
         step_row = QHBoxLayout()
-        step_row.addWidget(QLabel("u8step:"))
+        step_row.addWidget(QLabel("u8step"))
         step_row.addWidget(self.step_m)
         step_row.addWidget(QLabel("ref"))
         step_row.addWidget(self.ref)
         step_row.addStretch(1)
-        fmt_l.addLayout(step_row)
-        fmt_l.addWidget(self.size_label)
+        left.addLayout(step_row)
+        left.addStretch(1)
+
+        size_title = QLabel("Selected output")
+        size_title.setStyleSheet("color: #aaa;")
+        self.size_label = QLabel()
+        self.size_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        self.size_label.setStyleSheet("font-family: monospace;")
+        right.addWidget(size_title)
+        right.addWidget(self.size_label, 1)
+
+        cols.addLayout(left, 1)
+        cols.addLayout(right, 1)
+        fmt_l.addLayout(cols)
         v.addWidget(fmt)
-        self.mode_buttons["u16cm"].setChecked(True)
+        self.mode_buttons["f32"].setChecked(True)
+        self.mode_buttons["u16dm"].setToolTip(
+            "Fixed: metres×10 → int dm. 751.3 m → 7513. Fails if relief > 6553.5 m — use f32."
+        )
+        self.mode_buttons["f32"].setToolTip(
+            "Heights stay metres (float32). Use this for large mosaics."
+        )
 
         if self._publisher is not None:
             connect = (
-                f"BLITZ Stream → Connect  {self._publisher.connect_hint}\n"
-                "Not WOLKE — same contract as the Event reader (one mosaic push)."
+                f"Stream hub: {self._publisher.connect_hint}\n"
+                "In BLITZ or DONNER → Stream → Connect (same Viewer Contract)."
             )
         else:
-            connect = self._push_error or "Push server unavailable."
+            connect = self._push_error or "Stream hub unavailable."
         self.connect_label = QLabel(connect)
         self.connect_label.setWordWrap(True)
         v.addWidget(self.connect_label)
 
-        self.send_btn = QPushButton("Send to BLITZ")
+        self.send_btn = QPushButton("Stream")
         self.send_btn.setEnabled(False)
+        self.send_btn.setToolTip("Push the selected mosaic to the Stream hub (BLITZ / DONNER).")
         self.send_btn.clicked.connect(self._send)
         v.addWidget(self.send_btn)
 
@@ -508,6 +570,14 @@ class DgmMosaicWindow(QMainWindow):
         self.status = QLabel("Drop a folder of DGM TIFFs.")
         self.status.setWordWrap(True)
         v.addWidget(self.status)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(True)
+        self.progress.setFormat("%p%")
+        self.progress.hide()
+        v.addWidget(self.progress)
 
         if folder is not None:
             self._load_folder(folder)
@@ -536,7 +606,7 @@ class DgmMosaicWindow(QMainWindow):
         for mode, btn in self.mode_buttons.items():
             if btn.isChecked():
                 return mode
-        return "u16cm"
+        return "f32"
 
     def _kwargs(self, output: Path | None = None) -> dict:
         kw: dict = {
@@ -550,6 +620,10 @@ class DgmMosaicWindow(QMainWindow):
             kw["output_path"] = output
         return kw
 
+    def _colormap(self) -> ColormapName:
+        data = self.cmap.currentData()
+        return data if isinstance(data, str) else "bwr"
+
     def _load_folder(self, folder: Path) -> None:
         try:
             layout = inspect_folder(folder)
@@ -558,10 +632,11 @@ class DgmMosaicWindow(QMainWindow):
             return
         self._folder = folder
         self._layout = layout
+        self._raw_thumbs = None
         self.folder_edit.setText(str(folder))
         self.out_edit.setText(str(default_output_path(folder)))
-        self.send_btn.setEnabled(self._publisher is not None)
-        self._save_btn.setEnabled(True)
+        self.send_btn.setEnabled(False)
+        self._save_btn.setEnabled(False)
         km = (layout.east - layout.west) / 1000.0
         kn = (layout.north - layout.south) / 1000.0
         hole = f", {layout.holes} hole(s)" if layout.holes else ""
@@ -573,16 +648,10 @@ class DgmMosaicWindow(QMainWindow):
         self._rebuild_grid(layout)
         self._refresh_sizes()
         self._start_thumbs(layout)
-        if self._publisher is None:
-            self.status.setText("Loading tile previews…")
-        else:
-            self.status.setText(
-                f"Loading tile previews…  Then Connect BLITZ Stream to "
-                f"{self._publisher.connect_hint} and Send to BLITZ."
-            )
 
     def _set_legend(self) -> None:
-        rgb = legend_rgb(280, 12)
+        cmap = self._colormap()
+        rgb = legend_rgb(280, 12, colormap=cmap)
         h, w = rgb.shape[:2]
         qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
         self.legend_img.setPixmap(
@@ -593,11 +662,42 @@ class DgmMosaicWindow(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
+        labels = {k: lab for k, lab in COLORMAP_LABELS}
+        self.legend_cap.setText(f"low → high  ({labels.get(cmap, cmap)})")
+
+    def _on_preview_opts(self, *_args) -> None:
+        self._set_legend()
+        self._apply_preview_cache()
+
+    def _apply_preview_cache(self) -> None:
+        if self._raw_thumbs is None or self._layout is None:
+            return
+        layout = self._layout
+        unit = float_thumbs_to_unit(
+            self._raw_thumbs, per_tile=not self.norm_cb.isChecked()
+        )
+        rgb = compose_preview_rgb(
+            layout.tile_rows,
+            layout.tile_cols,
+            unit,
+            colormap=self._colormap(),
+        )
+        labels = {key: stub.label_km for key, stub in layout.cells.items()}
+        self.mosaic_view.set_mosaic(
+            rgb,
+            layout.tile_rows,
+            layout.tile_cols,
+            labels,
+            keep_selection=True,
+        )
 
     def _on_selection(self) -> None:
         layout = self._layout
         if layout is None:
-            self.sel_label.setText("Drag a rectangle of tiles to export.")
+            self.sel_label.setText(
+                "Drag rectangle on the mosaic to select tiles (drag to grow/shrink)."
+            )
+            self.export_label.setText("Output: —")
             return
         r0, c0, r1, c1 = self.mosaic_view.tile_box()
         nr, nc = r1 - r0 + 1, c1 - c0 + 1
@@ -606,11 +706,39 @@ class DgmMosaicWindow(QMainWindow):
             for c in range(c0, c1 + 1):
                 if layout.cells.get((r, c)) is None:
                     holes += 1
-        hole = f", {holes} hole(s) → 0" if holes else ""
+        hole = f", {holes} hole(s) → fill 0" if holes else ""
         self.sel_label.setText(
-            f"Export {nr}×{nc} tiles  (rows {r0}…{r1}, cols {c0}…{c1}){hole}"
+            f"Selection: {nr}×{nc} tiles  "
+            f"(rows {r0}…{r1}, cols {c0}…{c1}){hole}  ·  "
+            "drag on the mosaic to change"
         )
         self._refresh_sizes()
+
+    def _refresh_sizes(self) -> None:
+        layout = self._layout
+        step_on = self._mode() == "u8step"
+        self.step_m.setEnabled(step_on)
+        self.ref.setEnabled(step_on)
+        if layout is None:
+            self.size_label.setText("Load a folder to see output size.")
+            self.export_label.setText("Output: —")
+            return
+        chosen = self._mode()
+        box = self.mosaic_view.tile_box()
+        h, w = layout.shape_box(box)
+        points = int(h) * int(w)
+        mb = fmt_mb(layout.nbytes_box(chosen, box))
+        self.export_label.setText(
+            f"Output: {w}×{h} px  ·  {points:,} points  ·  {mb} ({chosen})"
+        )
+        lines = []
+        for mode, label in _MODES:
+            mark = "●" if mode == chosen else " "
+            mh, mw = layout.shape_box(box)
+            lines.append(
+                f"{mark} {mode:<10}  {mw}×{mh} px   {fmt_mb(layout.nbytes_box(mode, box))}"
+            )
+        self.size_label.setText("\n".join(lines))
 
     def _rebuild_grid(self, layout: MosaicLayout) -> None:
         labels = {
@@ -628,65 +756,77 @@ class DgmMosaicWindow(QMainWindow):
         jobs = {key: stub.path for key, stub in layout.cells.items()}
         if not jobs:
             return
+        n = len(jobs)
+        self._set_busy(True, f"Loading previews… 0 / {n}")
+        self.progress.show()
+        self.progress.setRange(0, n)
+        self.progress.setValue(0)
+        self.progress.setFormat(f"0 / {n}")
         self._thumb_thread = QThread()
-        self._thumb_worker = _ThumbWork(
-            gen, jobs, layout.tile_rows, layout.tile_cols
-        )
+        self._thumb_worker = _ThumbWork(gen, jobs)
         self._thumb_worker.moveToThread(self._thumb_thread)
         self._thumb_thread.started.connect(self._thumb_worker.run)
+        self._thumb_worker.progress.connect(self._on_thumb_progress)
         self._thumb_worker.finished.connect(self._on_thumbs)
         self._thumb_worker.failed.connect(self._on_thumbs_fail)
         self._thumb_worker.finished.connect(self._thumb_thread.quit)
         self._thumb_worker.failed.connect(self._thumb_thread.quit)
         self._thumb_thread.start()
 
-    def _on_thumbs(self, gen: int, rgb: object) -> None:
+    def _on_thumb_progress(self, done: int, total: int, name: str) -> None:
+        self.progress.setRange(0, max(total, 1))
+        self.progress.setValue(done)
+        self.progress.setFormat(f"{done} / {total}")
+        self.status.setText(f"Loading previews… {done} / {total}  ({name})")
+
+    def _on_thumbs(self, gen: int, raw: object) -> None:
         if gen != self._thumb_gen or self._layout is None:
             return
-        layout = self._layout
-        labels = {key: stub.label_km for key, stub in layout.cells.items()}
-        self.mosaic_view.set_mosaic(
-            np.asarray(rgb),
-            layout.tile_rows,
-            layout.tile_cols,
-            labels,
-            keep_selection=True,
-        )
+        self._raw_thumbs = dict(raw)  # type: ignore[arg-type]
+        self._apply_preview_cache()
+        self.progress.hide()
+        self._set_busy(False)
         hint = ""
         if self._publisher is not None:
-            hint = f" Connect BLITZ Stream to {self._publisher.connect_hint}, then Send."
-        self.status.setText(f"Previews ready.{hint}")
+            hint = (
+                f" Connect BLITZ or DONNER Stream to {self._publisher.connect_hint}, "
+                "then click Stream."
+            )
+        self.status.setText(f"Previews ready ({len(self._raw_thumbs)} tiles).{hint}")
+        self.send_btn.setEnabled(self._publisher is not None)
+        self._save_btn.setEnabled(True)
 
     def _on_thumbs_fail(self, gen: int, message: str) -> None:
         if gen != self._thumb_gen:
             return
+        self.progress.hide()
+        self._set_busy(False)
         self.status.setText(f"Preview failed: {message}")
+        QMessageBox.warning(self, "Preview failed", message)
 
-    def _refresh_sizes(self) -> None:
-        layout = self._layout
-        step_on = self._mode() == "u8step"
-        self.step_m.setEnabled(step_on)
-        self.ref.setEnabled(step_on)
-        if layout is None:
-            self.size_label.setText("Load a folder to see output size.")
-            return
-        chosen = self._mode()
-        box = self.mosaic_view.tile_box()
-        lines = []
-        for mode, _label in _MODES:
-            mark = "←" if mode == chosen else " "
-            lines.append(f"{mark} {mode}: {fmt_mb(layout.nbytes_box(mode, box))}")
-        self.size_label.setText("\n".join(lines))
-
-    def _busy(self, on: bool) -> None:
+    def _set_busy(self, on: bool, status: str | None = None) -> None:
+        self._loading = on
         self.send_btn.setEnabled(
             (not on) and self._publisher is not None and self._folder is not None
+            and self._raw_thumbs is not None
         )
-        self._save_btn.setEnabled((not on) and self._folder is not None)
+        self._save_btn.setEnabled(
+            (not on) and self._folder is not None and self._raw_thumbs is not None
+        )
+        self.norm_cb.setEnabled(not on)
+        self.cmap.setEnabled(not on)
+        if status is not None:
+            self.status.setText(status)
+
+    def _busy(self, on: bool) -> None:
+        self._set_busy(on)
 
     def _start_work(self, kind: str, kwargs: dict) -> None:
-        self._busy(True)
-        self.status.setText("Reading TIFFs and building mosaic…")
+        n = len(self._layout.stubs) if self._layout else 0
+        self._set_busy(True, f"Building mosaic from {n} tile(s)…")
+        self.progress.show()
+        self.progress.setRange(0, 0)  # indeterminate
+        self.progress.setFormat("Working…")
         self._thread = QThread()
         self._worker = _Work(kind, kwargs)
         self._worker.moveToThread(self._thread)
@@ -702,7 +842,7 @@ class DgmMosaicWindow(QMainWindow):
     def _send(self) -> None:
         if self._folder is None or self._publisher is None:
             if self._push_error:
-                QMessageBox.warning(self, "Send to BLITZ", self._push_error)
+                QMessageBox.warning(self, "Stream", self._push_error)
             return
         self._start_work("send", self._kwargs())
 
@@ -723,18 +863,22 @@ class DgmMosaicWindow(QMainWindow):
         self._publisher.set_stack(arr, push=True)
         mb = arr.nbytes / (1024 * 1024)
         mode = meta.get("mode")
-        self._busy(False)
+        self.progress.hide()
+        self._set_busy(False)
         self.status.setText(
-            f"Pushed {mode} {arr.shape[1]}×{arr.shape[0]} ({mb:.1f} MB) to BLITZ.\n"
-            f"Stream should already be connected to {self._publisher.connect_hint}."
+            f"Streaming {mode} {arr.shape[1]}×{arr.shape[0]} "
+            f"({arr.shape[1] * arr.shape[0]:,} points, {mb:.1f} MB).\n"
+            f"BLITZ / DONNER → Stream → {self._publisher.connect_hint}."
         )
 
     def _on_saved(self, path: str) -> None:
-        self._busy(False)
+        self.progress.hide()
+        self._set_busy(False)
         self.status.setText(f"Wrote {path}")
 
     def _on_fail(self, message: str) -> None:
-        self._busy(False)
+        self.progress.hide()
+        self._set_busy(False)
         self.status.setText(f"Error: {message}")
         QMessageBox.warning(self, "Mosaic failed", message)
 
@@ -763,8 +907,8 @@ def main() -> None:
     parser.add_argument("-o", "--output", default=None)
     parser.add_argument(
         "--dtype",
-        choices=("u16cm", "u8stretch", "u8step", "f32"),
-        default="u16cm",
+        choices=("f32", "u16dm", "u8step"),
+        default="f32",
     )
     parser.add_argument("--step-m", type=float, default=0.25)
     parser.add_argument("--ref", choices=("min", "mean"), default="min")

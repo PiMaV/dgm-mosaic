@@ -1,13 +1,12 @@
 """
 DGM GeoTIFF tiles → one mosaic for BLITZ.
 
-No GDAL: OpenCV reads Float32 TIFF; placement from .tfw or LGL
+No GDAL / OpenCV: classic TIFF via ``tiffio``; placement from .tfw or LGL
 ``dgm025_32_{e_km}_{n_km}_…`` names. Axis-aligned square pixels only.
 """
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,10 +14,11 @@ from typing import Any, Literal
 
 import numpy as np
 
-os.environ.setdefault("OPENCV_LOG_LEVEL", "SILENT")
+from dgm_mosaic import tiffio
 
-DtypeMode = Literal["u16cm", "u8stretch", "u8step", "f32"]
+DtypeMode = Literal["u16dm", "u8step", "f32"]
 RefMode = Literal["min", "mean"]
+ColormapName = Literal["bwr", "gray", "terrain", "plasma", "viridis"]
 
 TIFF_SUFFIXES = {".tif", ".tiff"}
 NODATA_DEFAULT = -9999.0
@@ -28,6 +28,18 @@ _RE_DGM = re.compile(
     r"^dgm(?P<res>\d+)_(?P<zone>\d+)_(?P<e>\d+)_(?P<n>\d+)_",
     re.IGNORECASE,
 )
+
+# Codes 1..65535; 0 = nodata. Fixed scale: 1 DN = 1 dm = 0.1 m (metres × 10).
+U16_CODE_MAX = 65535
+U16_DM_SCALE_M = 0.1
+
+COLORMAP_LABELS: list[tuple[ColormapName, str]] = [
+    ("bwr", "Blue–white–red"),
+    ("gray", "Grayscale"),
+    ("terrain", "Terrain"),
+    ("plasma", "Plasma"),
+    ("viridis", "Viridis"),
+]
 
 
 @dataclass(frozen=True)
@@ -134,36 +146,16 @@ def pixel_m_close(a: float, b: float) -> bool:
     return abs(a - b) <= max(PIXEL_EPS * max(abs(a), abs(b), 1e-9), 1e-9)
 
 
-def _import_cv2():
-    try:
-        import cv2
-    except ImportError as e:
-        raise RuntimeError(
-            "OpenCV is required to read DGM GeoTIFFs. "
-            "From converters/: uv sync && uv run dgm-mosaic"
-        ) from e
-    return cv2
-
-
 def read_float_tif(path: Path) -> np.ndarray:
     """Read a single-band TIFF as float32 (H, W). GeoTIFF tags are ignored."""
-    cv2 = _import_cv2()
-    img = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-    if img is None:
-        raise ValueError(f"{path.name}: OpenCV could not read TIFF")
-    if img.ndim == 3:
-        img = img[..., 0]
-    if img.ndim != 2:
-        raise ValueError(f"{path.name}: expected 2D raster, got shape {img.shape}")
-    return np.asarray(img, dtype=np.float32)
+    return tiffio.read_float32(path)
 
 
 THUMB_EDGE = 192
 
 
 def downsample_height(z: np.ndarray, max_edge: int = THUMB_EDGE) -> np.ndarray:
-    """Resize a 2D height field for GUI tiles. Keeps NaNs via INTER_AREA on finite data."""
-    cv2 = _import_cv2()
+    """Resize a 2D height field for GUI tiles (area mean of finite samples)."""
     arr = np.asarray(z, dtype=np.float32)
     if arr.ndim != 2:
         raise ValueError(f"expected 2D, got {arr.shape}")
@@ -171,8 +163,18 @@ def downsample_height(z: np.ndarray, max_edge: int = THUMB_EDGE) -> np.ndarray:
     scale = max_edge / max(h, w, 1)
     nh, nw = max(1, int(round(h * scale))), max(1, int(round(w * scale)))
     if (nh, nw) == (h, w):
-        return arr
-    return cv2.resize(arr, (nw, nh), interpolation=cv2.INTER_AREA)
+        return arr.copy()
+    row_edges = np.linspace(0, h, nh + 1).astype(int)
+    col_edges = np.linspace(0, w, nw + 1).astype(int)
+    out = np.empty((nh, nw), dtype=np.float32)
+    for i in range(nh):
+        r0, r1 = int(row_edges[i]), max(int(row_edges[i + 1]), int(row_edges[i]) + 1)
+        for j in range(nw):
+            c0, c1 = int(col_edges[j]), max(int(col_edges[j + 1]), int(col_edges[j]) + 1)
+            block = arr[r0:r1, c0:c1]
+            finite = block[np.isfinite(block)]
+            out[i, j] = float(np.mean(finite)) if finite.size else np.nan
+    return out
 
 
 def tile_thumbnail(path: Path, max_edge: int = THUMB_EDGE) -> np.ndarray:
@@ -183,8 +185,29 @@ def tile_thumbnail(path: Path, max_edge: int = THUMB_EDGE) -> np.ndarray:
     return downsample_height(z, max_edge=max_edge)
 
 
-def float_thumbs_to_unit(thumbs: dict) -> dict:
-    """Min–max of the whole set → [0, 1]. NaN stays NaN (holes stay empty)."""
+def float_thumbs_to_unit(
+    thumbs: dict,
+    *,
+    per_tile: bool = False,
+) -> dict:
+    """Map heights → [0, 1]. NaN stays NaN.
+
+    ``per_tile=False`` (default): one min–max across the whole set.
+    ``per_tile=True``: each card min–max alone (local contrast).
+    """
+    if per_tile:
+        out = {}
+        for k, t in thumbs.items():
+            arr = np.asarray(t, dtype=np.float32)
+            u = np.full(arr.shape, np.nan, dtype=np.float32)
+            m = np.isfinite(arr)
+            if m.any():
+                lo, hi = float(np.min(arr[m])), float(np.max(arr[m]))
+                span = max(hi - lo, 1e-6)
+                u[m] = (arr[m] - lo) / span
+            out[k] = u
+        return out
+
     finite = [
         t[np.isfinite(t)].ravel()
         for t in thumbs.values()
@@ -208,31 +231,85 @@ def float_thumbs_to_unit(thumbs: dict) -> dict:
     return out
 
 
-def diverging_rgb(unit: np.ndarray) -> np.ndarray:
-    """Map [0, 1] to blue–white–red. Non-finite → black."""
+def _lerp_lut(stops: list[tuple[float, tuple[float, float, float]]], n: int = 256) -> np.ndarray:
+    """Build an (n, 3) uint8 LUT from (t, rgb01) control points."""
+    xs = np.array([s[0] for s in stops], dtype=np.float64)
+    cs = np.array([s[1] for s in stops], dtype=np.float64)
+    t = np.linspace(0.0, 1.0, n, dtype=np.float64)
+    rgb = np.empty((n, 3), dtype=np.float64)
+    for ch in range(3):
+        rgb[:, ch] = np.interp(t, xs, cs[:, ch])
+    return np.clip(np.rint(rgb * 255.0), 0, 255).astype(np.uint8)
+
+
+_LUTS: dict[str, np.ndarray] = {
+    "bwr": _lerp_lut(
+        [
+            (0.0, (0.0, 0.0, 1.0)),
+            (0.5, (1.0, 1.0, 1.0)),
+            (1.0, (1.0, 0.0, 0.0)),
+        ]
+    ),
+    "gray": _lerp_lut([(0.0, (0.0, 0.0, 0.0)), (1.0, (1.0, 1.0, 1.0))]),
+    "terrain": _lerp_lut(
+        [
+            (0.0, (0.15, 0.35, 0.15)),
+            (0.35, (0.45, 0.55, 0.25)),
+            (0.65, (0.55, 0.4, 0.2)),
+            (0.85, (0.75, 0.7, 0.55)),
+            (1.0, (0.95, 0.95, 0.95)),
+        ]
+    ),
+    "plasma": _lerp_lut(
+        [
+            (0.0, (0.05, 0.03, 0.53)),
+            (0.25, (0.56, 0.05, 0.64)),
+            (0.5, (0.87, 0.28, 0.41)),
+            (0.75, (0.99, 0.65, 0.15)),
+            (1.0, (0.94, 0.98, 0.13)),
+        ]
+    ),
+    "viridis": _lerp_lut(
+        [
+            (0.0, (0.27, 0.0, 0.33)),
+            (0.25, (0.23, 0.32, 0.55)),
+            (0.5, (0.13, 0.57, 0.55)),
+            (0.75, (0.37, 0.78, 0.38)),
+            (1.0, (0.99, 0.91, 0.14)),
+        ]
+    ),
+}
+# Exact mid white for bwr (float index rounding otherwise drifts ±1).
+_LUTS["bwr"][127] = (255, 255, 255)
+_LUTS["bwr"][128] = (255, 255, 255)
+
+
+def apply_colormap(unit: np.ndarray, name: ColormapName | str = "bwr") -> np.ndarray:
+    """Map [0, 1] through a named LUT. Non-finite → black."""
     t = np.asarray(unit, dtype=np.float32)
-    rgb = np.zeros(t.shape + (3,), dtype=np.float32)
+    lut = _LUTS.get(str(name), _LUTS["bwr"])
+    rgb = np.zeros(t.shape + (3,), dtype=np.uint8)
     m = np.isfinite(t)
     if not np.any(m):
-        return np.zeros(t.shape + (3,), dtype=np.uint8)
-    x = np.clip(t, 0.0, 1.0)
-    lo = m & (x <= 0.5)
-    hi = m & (x > 0.5)
-    s = x * 2.0
-    rgb[lo, 0] = s[lo]
-    rgb[lo, 1] = s[lo]
-    rgb[lo, 2] = 1.0
-    s = (x - 0.5) * 2.0
-    rgb[hi, 0] = 1.0
-    rgb[hi, 1] = 1.0 - s[hi]
-    rgb[hi, 2] = 1.0 - s[hi]
-    return np.clip(np.rint(rgb * 255.0), 0, 255).astype(np.uint8)
+        return rgb
+    idx = np.clip(np.floor(np.clip(t[m], 0.0, 1.0) * 255.0 + 1e-6), 0, 255).astype(
+        np.intp
+    )
+    rgb[m] = lut[idx]
+    return rgb
+
+
+def diverging_rgb(unit: np.ndarray) -> np.ndarray:
+    """Map [0, 1] to blue–white–red. Non-finite → black."""
+    return apply_colormap(unit, "bwr")
 
 
 def compose_preview_rgb(
     rows: int,
     cols: int,
     unit_thumbs: dict[tuple[int, int], np.ndarray],
+    *,
+    colormap: ColormapName | str = "bwr",
 ) -> np.ndarray:
     """Edge-to-edge RGB mosaic; missing cells stay black."""
     if not unit_thumbs:
@@ -242,14 +319,21 @@ def compose_preview_rgb(
     for (r, c), unit in unit_thumbs.items():
         if r < 0 or c < 0 or r >= rows or c >= cols:
             continue
-        rgb[r * th : (r + 1) * th, c * tw : (c + 1) * tw] = diverging_rgb(unit)
+        rgb[r * th : (r + 1) * th, c * tw : (c + 1) * tw] = apply_colormap(
+            unit, colormap
+        )
     return rgb
 
 
-def legend_rgb(width: int = 256, height: int = 12) -> np.ndarray:
+def legend_rgb(
+    width: int = 256,
+    height: int = 12,
+    *,
+    colormap: ColormapName | str = "bwr",
+) -> np.ndarray:
     ramp = np.linspace(0.0, 1.0, max(width, 1), dtype=np.float32)
     strip = np.repeat(ramp[None, :], max(height, 1), axis=0)
-    return diverging_rgb(strip)
+    return apply_colormap(strip, colormap)
 
 
 def norm_tile_box(
@@ -286,47 +370,7 @@ def list_tiffs(root: Path) -> list[Path]:
 
 def peek_tif_hw(path: Path) -> tuple[int, int]:
     """Return (height, width) from a classic TIFF IFD — no pixel decode."""
-    import struct
-
-    with path.open("rb") as f:
-        hdr = f.read(8)
-        if len(hdr) < 8:
-            raise ValueError(f"{path.name}: truncated TIFF header")
-        if hdr[:2] == b"II":
-            endian = "<"
-        elif hdr[:2] == b"MM":
-            endian = ">"
-        else:
-            raise ValueError(f"{path.name}: not a TIFF")
-        magic = struct.unpack(endian + "H", hdr[2:4])[0]
-        if magic == 43:
-            raise ValueError(f"{path.name}: BigTIFF is unsupported")
-        if magic != 42:
-            raise ValueError(f"{path.name}: not a TIFF")
-        ifd = struct.unpack(endian + "I", hdr[4:8])[0]
-        f.seek(ifd)
-        n_raw = f.read(2)
-        if len(n_raw) < 2:
-            raise ValueError(f"{path.name}: truncated IFD")
-        n = struct.unpack(endian + "H", n_raw)[0]
-        width = height = None
-        for _ in range(n):
-            entry = f.read(12)
-            if len(entry) < 12:
-                break
-            tag, typ, count, val = struct.unpack(endian + "HHII", entry)
-            if count != 1:
-                continue
-            parsed = val
-            if typ == 3:  # SHORT, stored in low 16 bits of val
-                parsed = val & 0xFFFF
-            if tag == 256:
-                width = int(parsed)
-            elif tag == 257:
-                height = int(parsed)
-        if width is None or height is None:
-            raise ValueError(f"{path.name}: TIFF missing ImageWidth/Length")
-        return height, width
+    return tiffio.peek_hw(path)
 
 
 def _origin_for_tif(path: Path) -> tuple[float, float, float, DgmName | None]:
@@ -364,8 +408,7 @@ def load_tile(path: Path, *, nodata: float = NODATA_DEFAULT) -> Tile:
 
 BYTES_PER_PIXEL: dict[str, int] = {
     "f32": 4,
-    "u16cm": 2,
-    "u8stretch": 1,
+    "u16dm": 2,
     "u8step": 1,
 }
 
@@ -429,13 +472,18 @@ class MosaicLayout:
         return estimate_npy_bytes(self.height, self.width, mode)
 
     def nbytes_box(self, mode: DtypeMode, box: tuple[int, int, int, int]) -> int:
+        h, w = self.shape_box(box)
+        return estimate_npy_bytes(h, w, mode)
+
+    def shape_box(self, box: tuple[int, int, int, int]) -> tuple[int, int]:
+        """Pixel (height, width) of the selected tile rectangle."""
         if not self.cells:
-            return 0
+            return 0, 0
         sample = next(iter(self.cells.values()))
         r0, c0, r1, c1 = norm_tile_box(box, self.tile_rows, self.tile_cols)
         h = (r1 - r0 + 1) * sample.height
         w = (c1 - c0 + 1) * sample.width
-        return estimate_npy_bytes(h, w, mode)
+        return h, w
 
 
 def stub_tile(path: Path) -> TileStub:
@@ -620,68 +668,45 @@ def _valid_mask(z: np.ndarray) -> np.ndarray:
     return np.isfinite(z)
 
 
-def quantize_u16cm(z: np.ndarray, z0: float | None = None) -> QuantizeResult:
+def quantize_u16dm(z: np.ndarray, z0: float | None = None) -> QuantizeResult:
+    """uint16 decimetres relative to z0 — fixed 1 dm/DN, metres are authoritative.
+
+    ``751.3 m → 7513`` (with z0=0). Never rescales to “fit” the dtype.
+    Pixel 0 = nodata. Reconstruct: ``z_m = z0_m + pixel * 0.1``.
+    Max relief from z0: 6553.5 m.
+    """
     valid = _valid_mask(z)
     if not np.any(valid):
         raise ValueError("mosaic has no valid pixels")
     z_min = float(np.nanmin(z))
     z_max = float(np.nanmax(z))
     z0_m = float(np.floor(z_min) if z0 is None else z0)
-    cm = np.rint((z - z0_m) * 100.0)
-    if np.any(valid & (cm < 1)):
-        z0_m -= 1.0
-        cm = np.rint((z - z0_m) * 100.0)
-    if np.any(valid & (cm > 65535)):
+    dm = np.rint((z - z0_m) / U16_DM_SCALE_M)
+    if np.any(valid & (dm < 1)):
+        z0_m -= U16_DM_SCALE_M
+        dm = np.rint((z - z0_m) / U16_DM_SCALE_M)
+    if np.any(valid & ((dm < 1) | (dm > U16_CODE_MAX))):
         relief = z_max - z0_m
         raise ValueError(
-            f"u16cm overflow: relief {relief:.1f} m from z0={z0_m:g} exceeds 655.35 m"
+            f"u16dm: relief {relief:.1f} m from z0={z0_m:g} does not fit "
+            f"fixed 1 dm/DN (max {U16_CODE_MAX * U16_DM_SCALE_M:g} m). "
+            "Use format f32 (metres) — do not rescale heights to fit uint16."
         )
     out = np.zeros(z.shape, dtype=np.uint16)
-    out[valid] = np.clip(cm[valid], 1, 65535).astype(np.uint16)
-    n_clip = 0
+    out[valid] = dm[valid].astype(np.uint16)
     return QuantizeResult(
         out,
         {
-            "mode": "u16cm",
+            "mode": "u16dm",
             "dtype": "uint16",
             "nodata": 0,
             "z0_m": z0_m,
-            "scale_m": 0.01,
-            "z_min_m": z_min,
-            "z_max_m": z_max,
-            "clipped_pixels": n_clip,
-            "reconstruct": "z_m = z0_m + pixel * scale_m  (pixel 0 = nodata)",
-        },
-    )
-
-
-def quantize_u8stretch(z: np.ndarray) -> QuantizeResult:
-    valid = _valid_mask(z)
-    if not np.any(valid):
-        raise ValueError("mosaic has no valid pixels")
-    z_min = float(np.nanmin(z))
-    z_max = float(np.nanmax(z))
-    span = z_max - z_min
-    out = np.zeros(z.shape, dtype=np.uint8)
-    if span <= 0:
-        out[valid] = 1
-        scale = 0.0
-    else:
-        scaled = 1.0 + np.rint((z - z_min) / span * 254.0)
-        out[valid] = np.clip(scaled[valid], 1, 255).astype(np.uint8)
-        scale = span / 254.0
-    return QuantizeResult(
-        out,
-        {
-            "mode": "u8stretch",
-            "dtype": "uint8",
-            "nodata": 0,
-            "z0_m": z_min,
-            "scale_m": scale,
+            "scale_m": U16_DM_SCALE_M,
             "z_min_m": z_min,
             "z_max_m": z_max,
             "clipped_pixels": 0,
-            "reconstruct": "z_m ≈ z0_m + (pixel - 1) * scale_m  (pixel 0 = nodata)",
+            "unit": "dm",
+            "reconstruct": "z_m = z0_m + pixel * scale_m  (pixel 0 = nodata)",
         },
     )
 
@@ -692,6 +717,7 @@ def quantize_u8step(
     step_m: float,
     ref: RefMode,
 ) -> QuantizeResult:
+    """uint8 with a fixed metre step — no stretch-to-fit, no silent clip."""
     if step_m <= 0:
         raise ValueError("--step-m must be > 0")
     valid = _valid_mask(z)
@@ -702,18 +728,26 @@ def quantize_u8step(
     z_ref = z_min if ref == "min" else float(np.nanmean(z))
     if ref == "min":
         raw = np.rint((z - z_ref) / step_m) + 1.0
-        reconstruct = "z_m ≈ z0_m + (pixel - 1) * scale_m  (pixel 0 = nodata)"
+        reconstruct = "z_m = z0_m + (pixel - 1) * scale_m  (pixel 0 = nodata)"
         z0_m = z_ref
+        code_lo, code_hi = 1.0, 255.0
     else:
         raw = np.rint((z - z_ref) / step_m) + 128.0
-        reconstruct = "z_m ≈ z0_m + (pixel - 128) * scale_m  (pixel 0 = nodata)"
+        reconstruct = "z_m = z0_m + (pixel - 128) * scale_m  (pixel 0 = nodata)"
         z0_m = z_ref
-    would = valid & ((raw < 1) | (raw > 255))
-    n_clip = int(would.sum())
+        code_lo, code_hi = 1.0, 255.0
+    would = valid & ((raw < code_lo) | (raw > code_hi))
+    if np.any(would):
+        relief = z_max - z_min
+        suggested = relief / 254.0 if relief > 0 else step_m
+        raise ValueError(
+            f"u8step: {int(would.sum())} pixel(s) outside 1…255 at step "
+            f"{step_m:g} m (relief {relief:.1f} m). "
+            f"Increase --step-m (e.g. ≥ {suggested:.3f} m) or use f32 — "
+            "heights are not rescaled to fit."
+        )
     out = np.zeros(z.shape, dtype=np.uint8)
-    out[valid] = np.clip(raw[valid], 1, 255).astype(np.uint8)
-    relief = z_max - z_min
-    suggested = relief / 254.0 if relief > 0 else step_m
+    out[valid] = raw[valid].astype(np.uint8)
     return QuantizeResult(
         out,
         {
@@ -725,8 +759,7 @@ def quantize_u8step(
             "scale_m": step_m,
             "z_min_m": z_min,
             "z_max_m": z_max,
-            "clipped_pixels": n_clip,
-            "suggested_step_m": suggested,
+            "clipped_pixels": 0,
             "reconstruct": reconstruct,
         },
     )
@@ -760,10 +793,8 @@ def quantize(
     ref: RefMode = "min",
     z0: float | None = None,
 ) -> QuantizeResult:
-    if mode == "u16cm":
-        return quantize_u16cm(z, z0=z0)
-    if mode == "u8stretch":
-        return quantize_u8stretch(z)
+    if mode == "u16dm":
+        return quantize_u16dm(z, z0=z0)
     if mode == "u8step":
         return quantize_u8step(z, step_m=step_m, ref=ref)
     if mode == "f32":
@@ -780,7 +811,7 @@ def default_output_path(input_path: Path) -> Path:
 def mosaic_array(
     input_path: Path,
     *,
-    mode: DtypeMode = "u16cm",
+    mode: DtypeMode = "f32",
     step_m: float = 0.25,
     ref: RefMode = "min",
     nodata: float = NODATA_DEFAULT,
@@ -822,7 +853,7 @@ def convert(
     input_path: Path,
     output_path: Path | None = None,
     *,
-    mode: DtypeMode = "u16cm",
+    mode: DtypeMode = "f32",
     step_m: float = 0.25,
     ref: RefMode = "min",
     nodata: float = NODATA_DEFAULT,
