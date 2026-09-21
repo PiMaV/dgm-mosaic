@@ -33,8 +33,10 @@ TIFF via `dgm_mosaic/tiffio.py` (uncompressed strips or tiles, float/int).
 | Path | Role |
 |------|------|
 | `dgm_mosaic/app.py` | DnD GUI, progress, preview options |
+| `dgm_mosaic/app_icon.py` | Window icon helper |
 | `dgm_mosaic/mosaic.py` | Layout, quantize, colormaps |
 | `dgm_mosaic/tiffio.py` | Classic TIFF reader (no OpenCV) |
+| `icon/` | App icon (`icon_64.ico` + PNGs) |
 | `DGM.spec` | PyInstaller entry |
 | `cmd/dgm-mosaic` | Optional Go CLI (low priority) |
 

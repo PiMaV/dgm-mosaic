@@ -16,8 +16,8 @@ flowchart LR
 
 ## Roles
 
-- **Product binary** (PyInstaller): PyQt window + embedded Viewer Contract hub
-  on one port (Engine.IO/Socket.IO + `.npy` GET). Progress bar during preview
+- **Product binary** (PyInstaller): PyQt window + icon + embedded Viewer Contract
+  hub on one port (Engine.IO/Socket.IO + `.npy` GET). Progress bar during preview
   load and mosaic build.
 - **TIFF:** `tiffio` reads uncompressed classic TIFF strips or tiles (no OpenCV /
   GDAL). Preview downsamples with numpy; optional per-tile normalize and

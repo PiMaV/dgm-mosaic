@@ -4,13 +4,13 @@
 
 - [x] Pure TIFF reader (strips + tiles) — no OpenCV in the product binary
 - [x] Progress bar + status while loading previews / building mosaic
-- [x] Per-tile normalize checkbox (default on)
+- [x] Whole-mosaic normalize default; optional per-tile
 - [x] Selectable preview colormaps
+- [x] u16dm (fixed 1 dm/DN); Stream button; live selection size/points
+- [x] App icon + README screenshot + LGL DGM25 example link
 
 ## Next
 
-- [ ] Screenshot for README (user-facing docs rule)
-- [ ] New release tag after WWM on a real LGL tile set
 - [ ] Demote Go CLI in release assets if still unused
 - [ ] Landing / suite docs: link once the new binary is verified
 

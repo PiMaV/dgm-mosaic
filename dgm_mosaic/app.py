@@ -20,6 +20,8 @@ from PyQt6.QtGui import (
     QPen,
     QPixmap,
 )
+
+from dgm_mosaic.app_icon import set_window_icon
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -392,6 +394,7 @@ class DgmMosaicWindow(QMainWindow):
     def __init__(self, folder: Path | None = None) -> None:
         super().__init__()
         self.setWindowTitle("DGM mosaic → BLITZ")
+        set_window_icon(self, relative_to=Path(__file__).resolve().parent.parent)
         self.setAcceptDrops(True)
         self.resize(820, 900)
         self._folder: Path | None = None

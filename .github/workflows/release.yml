@@ -98,8 +98,10 @@ jobs:
           generate_release_notes: true
           body: |
             **DGM mosaic** — drop a GeoTIFF tile folder, preview, select a
-            rectangle, Send to BLITZ / DONNER.
+            rectangle, Stream to BLITZ / DONNER.
 
             Linux: `chmod +x DGM-v…-linux-x86_64`, then run.
 
-            BLITZ → Stream: `http://127.0.0.1:5056`, token `dgm`.
+            BLITZ / DONNER → Stream: `http://127.0.0.1:5056`, token `dgm`.
+
+            Example tiles: LGL BW [DGM25 GeoTIFF](https://opengeodata.lgl-bw.de/#/(sidenav:product/dgm025)).

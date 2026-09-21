@@ -4,8 +4,10 @@
 
 Part of [WETTER](https://wetter.mess.engineering).
 
-Drop a folder of DGM GeoTIFF tiles, preview the mosaic, drag a rectangle of
-tiles, **Send to BLITZ** or DONNER.
+Drop a folder of DGM GeoTIFF tiles, preview the mosaic, select a rectangle,
+**Stream** to BLITZ or DONNER.
+
+![DGM mosaic UI](docs/Screenshot.png)
 
 **Download:** [latest release](https://github.com/PiMaV/dgm-mosaic/releases/latest)
 — `DGM-vX.Y.Z-linux-x86_64` or `DGM-vX.Y.Z-windows-x86_64.exe`.
@@ -13,12 +15,15 @@ tiles, **Send to BLITZ** or DONNER.
 1. Download the file for your system.
 2. Linux: `chmod +x DGM-vX.Y.Z-linux-x86_64`
 3. Run it. Drop a tile folder (or Browse…).
-4. Wait for the preview bar to finish, pick tiles, **Send to BLITZ**.
-5. In BLITZ → Stream: `http://127.0.0.1:5056`, token `dgm`.
+4. Wait for the preview bar to finish, pick tiles, click **Stream**.
+5. In BLITZ or DONNER → Stream: `http://127.0.0.1:5056`, token `dgm`.
 
-Optional: **Normalize whole mosaic** (shared height scale; uncheck for per-tile)
-and colormap (blue–white–red, grayscale, terrain, plasma, viridis). Drag a
-rectangle on the mosaic to select tiles; **Stream** pushes to BLITZ or DONNER.
+Heights stay in metres (`float32`). Optional **uint16** stores **decimetres**
+(fixed 0.1 m/DN). Output size and point count show under the preview.
+
+**Example tiles:** LGL Baden-Württemberg
+[DGM25 GeoTIFF](https://opengeodata.lgl-bw.de/#/(sidenav:product/dgm025))
+(open data). Unzip a tile folder and drop it on the window.
 
 GNU GPL v3. See [LICENSE](LICENSE).
 
