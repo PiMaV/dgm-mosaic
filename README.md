@@ -5,7 +5,7 @@
 Part of [WETTER](https://wetter.mess.engineering).
 
 Drop a folder of DGM GeoTIFF tiles, preview the mosaic, select a rectangle,
-**Stream** to BLITZ and DONNER at once.
+**Stream** to BLITZ.
 
 ![DGM mosaic UI](docs/Screenshot.png)
 
@@ -16,14 +16,12 @@ Drop a folder of DGM GeoTIFF tiles, preview the mosaic, select a rectangle,
 2. Linux: `chmod +x DGM-vX.Y.Z-linux-x86_64`
 3. Run it. Drop a tile folder (or Browse…).
 4. Wait for the preview bar to finish, pick tiles, click **Stream**.
-5. Connect viewers (token `dgm` on both):
-   - **BLITZ** → `http://127.0.0.1:5056` — height plane `(1, H, W)`.
-   - **DONNER** → `http://127.0.0.1:5057` — elevation **surface** `(nZ, H, W)`
-     (one cube per map cell; no filled columns).
+5. In BLITZ → Stream: `http://127.0.0.1:5056`, token `dgm`.
 
 Heights stay in metres (`float32`). Optional **uint16** stores **decimetres**
 (fixed 0.1 m/DN). **Bin** (default **2×**, or 4/8/16× block mean) shrinks large
-mosaics when you want — full Bin sends full size to both hubs.
+mosaics. Output is always `(1, H, W)` for the WETTER Stream contract — open in
+**BLITZ**.
 
 **Example tiles:** LGL Baden-Württemberg
 [DGM25 GeoTIFF](https://opengeodata.lgl-bw.de/#/(sidenav:product/dgm025))

@@ -262,35 +262,6 @@ class BinThwTests(unittest.TestCase):
         self.assertEqual(estimate_npy_bytes(4000, 4000, "u16dm", bin=4), 1000 * 1000 * 2)
 
 
-class HeightSurfaceTests(unittest.TestCase):
-    def test_one_voxel_per_column_no_pillars(self) -> None:
-        from dgm_mosaic.mosaic import height_surface_thw
-
-        z = np.array(
-            [[10.0, 10.0, 12.0], [10.0, 14.0, 12.0], [np.nan, 14.0, 16.0]],
-            dtype=np.float32,
-        )
-        vol, meta = height_surface_thw(z, bins=7)
-        self.assertEqual(vol.dtype, np.uint16)
-        self.assertEqual(vol.shape[1:], (3, 3))
-        self.assertEqual(int(meta["occupied"]), 8)
-        self.assertEqual(int(meta["bins"]), 7)
-        for y in range(3):
-            for x in range(3):
-                col = vol[:, y, x]
-                self.assertLessEqual(int(np.count_nonzero(col)), 1)
-        self.assertEqual(int(np.count_nonzero(vol[:, 2, 0])), 0)
-        self.assertEqual(int(vol[-1, 2, 2]), 7)
-
-    def test_from_f32_plane(self) -> None:
-        from dgm_mosaic.mosaic import height_surface_from_plane
-
-        plane = as_thw(np.array([[1.0, 3.0], [2.0, 4.0]], dtype=np.float32))
-        vol, meta = height_surface_from_plane(plane, {"mode": "f32"}, bins=4)
-        self.assertEqual(vol.shape, (4, 2, 2))
-        self.assertEqual(int(meta["occupied"]), 4)
-
-
 class ThumbTests(unittest.TestCase):
     def test_minmax_unit_and_diverging(self) -> None:
         a = np.array([[10.0, 20.0], [10.0, 20.0]], dtype=np.float32)

@@ -53,7 +53,6 @@ from dgm_mosaic.mosaic import (
     default_output_path,
     float_thumbs_to_unit,
     fmt_mb,
-    height_surface_from_plane,
     inspect_folder,
     legend_rgb,
     mosaic_array,
@@ -63,14 +62,9 @@ from dgm_mosaic.mosaic import (
 log = logging.getLogger("dgm_mosaic")
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT_BLITZ = 5056
-DEFAULT_PORT_DONNER = 5057
+DEFAULT_PORT = 5056
 DEFAULT_TOKEN = "dgm"
-STACK_PLANE_NAME = "mosaic.npy"
-STACK_SURFACE_NAME = "surface.npy"
-# Back-compat alias
-DEFAULT_PORT = DEFAULT_PORT_BLITZ
-STACK_NAME = STACK_PLANE_NAME
+STACK_NAME = "mosaic.npy"
 
 _MODES: tuple[tuple[DtypeMode, str], ...] = (
     ("f32", "float32 metres (exact)"),
@@ -86,10 +80,10 @@ class MosaicPublisher:
     def __init__(
         self,
         host: str = DEFAULT_HOST,
-        port: int = DEFAULT_PORT_BLITZ,
+        port: int = DEFAULT_PORT,
         token: str = DEFAULT_TOKEN,
         *,
-        stack_name: str = STACK_PLANE_NAME,
+        stack_name: str = STACK_NAME,
         label: str = "BLITZ",
     ) -> None:
         from flask import Flask, abort, request
@@ -204,9 +198,7 @@ class _Work(QObject):
         try:
             if self.kind == "send":
                 arr, meta = mosaic_array(**self.kwargs)
-                surface, s_meta = height_surface_from_plane(arr, meta)
-                meta = {**meta, "surface": s_meta}
-                self.finished_array.emit((arr, surface), meta)
+                self.finished_array.emit(arr, meta)
             else:
                 path = convert(**self.kwargs)
                 self.finished_path.emit(str(path))
@@ -407,7 +399,7 @@ class MosaicView(QWidget):
 class DgmMosaicWindow(QMainWindow):
     def __init__(self, folder: Path | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("DGM mosaic → BLITZ / DONNER")
+        self.setWindowTitle("DGM mosaic → BLITZ")
         set_window_icon(self, relative_to=Path(__file__).resolve().parent.parent)
         self.setAcceptDrops(True)
         self.resize(820, 900)
@@ -419,27 +411,14 @@ class DgmMosaicWindow(QMainWindow):
         self._thumb_worker: _ThumbWork | None = None
         self._thumb_gen = 0
         self._raw_thumbs: dict | None = None
-        self._publisher_blitz: MosaicPublisher | None = None
-        self._publisher_donner: MosaicPublisher | None = None
+        self._publisher: MosaicPublisher | None = None
         self._push_error: str | None = None
         self._loading = False
         try:
-            self._publisher_blitz = MosaicPublisher(
-                port=DEFAULT_PORT_BLITZ,
-                stack_name=STACK_PLANE_NAME,
-                label="BLITZ",
-            )
-            self._publisher_blitz.start_background()
-            self._publisher_donner = MosaicPublisher(
-                port=DEFAULT_PORT_DONNER,
-                stack_name=STACK_SURFACE_NAME,
-                label="DONNER",
-            )
-            self._publisher_donner.start_background()
+            self._publisher = MosaicPublisher()
+            self._publisher.start_background()
         except Exception as exc:  # noqa: BLE001
             self._push_error = str(exc)
-            self._publisher_blitz = None
-            self._publisher_donner = None
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -603,14 +582,11 @@ class DgmMosaicWindow(QMainWindow):
             "Heights stay metres (float32). Use this for large mosaics."
         )
 
-        if self._publisher_blitz is not None and self._publisher_donner is not None:
+        if self._publisher is not None:
             connect = (
-                "Both hubs start with Stream (same mosaic, two shapes):\n"
-                f"  BLITZ  → {self._publisher_blitz.connect_hint}\n"
-                f"           plane (1, H, W) · {STACK_PLANE_NAME}\n"
-                f"  DONNER → {self._publisher_donner.connect_hint}\n"
-                f"           elevation surface (nZ, H, W) · {STACK_SURFACE_NAME}\n"
-                "Token on both: dgm. One voxel per map cell — no filled columns."
+                f"Stream hub: {self._publisher.connect_hint}\n"
+                "Primary: BLITZ → Stream → Connect. "
+                "Stack is always (1, H, W)."
             )
         else:
             connect = self._push_error or "Stream hub unavailable."
@@ -621,7 +597,7 @@ class DgmMosaicWindow(QMainWindow):
         self.send_btn = QPushButton("Stream")
         self.send_btn.setEnabled(False)
         self.send_btn.setToolTip(
-            "Push plane to BLITZ (:5056) and elevation surface to DONNER (:5057)."
+            "Push (1, H, W) mosaic to the Stream hub. Primary client: BLITZ."
         )
         self.send_btn.clicked.connect(self._send)
         v.addWidget(self.send_btn)
@@ -868,13 +844,13 @@ class DgmMosaicWindow(QMainWindow):
         self.progress.hide()
         self._set_busy(False)
         hint = ""
-        if self._hubs_ready():
+        if self._publisher is not None:
             hint = (
-                f" Connect BLITZ → {self._publisher_blitz.connect_hint}; "
-                f"DONNER → {self._publisher_donner.connect_hint}; then Stream."
+                f" Connect BLITZ Stream to {self._publisher.connect_hint}, "
+                "then click Stream."
             )
         self.status.setText(f"Previews ready ({len(self._raw_thumbs)} tiles).{hint}")
-        self.send_btn.setEnabled(self._hubs_ready())
+        self.send_btn.setEnabled(self._publisher is not None)
         self._save_btn.setEnabled(True)
 
     def _on_thumbs_fail(self, gen: int, message: str) -> None:
@@ -885,14 +861,11 @@ class DgmMosaicWindow(QMainWindow):
         self.status.setText(f"Preview failed: {message}")
         QMessageBox.warning(self, "Preview failed", message)
 
-    def _hubs_ready(self) -> bool:
-        return self._publisher_blitz is not None and self._publisher_donner is not None
-
     def _set_busy(self, on: bool, status: str | None = None) -> None:
         self._loading = on
         self.send_btn.setEnabled(
             (not on)
-            and self._hubs_ready()
+            and self._publisher is not None
             and self._folder is not None
             and self._raw_thumbs is not None
         )
@@ -928,7 +901,7 @@ class DgmMosaicWindow(QMainWindow):
         self._thread.start()
 
     def _send(self) -> None:
-        if self._folder is None or not self._hubs_ready():
+        if self._folder is None or self._publisher is None:
             if self._push_error:
                 QMessageBox.warning(self, "Stream", self._push_error)
             return
@@ -946,33 +919,25 @@ class DgmMosaicWindow(QMainWindow):
         self.out_edit.setText(picked)
         self._start_work("save", self._kwargs(output=Path(picked)))
 
-    def _on_sent(self, stacks, meta: dict) -> None:
-        assert self._publisher_blitz is not None
-        assert self._publisher_donner is not None
-        plane, surface = stacks
-        self._publisher_blitz.set_stack(plane, push=True)
-        self._publisher_donner.set_stack(surface, push=True)
-        mb_p = plane.nbytes / (1024 * 1024)
-        mb_s = surface.nbytes / (1024 * 1024)
+    def _on_sent(self, arr, meta: dict) -> None:
+        assert self._publisher is not None
+        self._publisher.set_stack(arr, push=True)
+        mb = arr.nbytes / (1024 * 1024)
         mode = meta.get("mode")
-        if plane.ndim == 3:
-            _, h, w = plane.shape
-            plane_s = f"(1, {h}, {w})"
+        if arr.ndim == 3:
+            _, h, w = arr.shape
+            shape_s = f"(1, {h}, {w})"
         else:
-            h, w = plane.shape[:2]
-            plane_s = f"{h}×{w}"
-        nz = int(surface.shape[0]) if surface.ndim == 3 else 1
-        surf_s = f"({nz}, {h}, {w})"
-        occ = int((meta.get("surface") or {}).get("occupied") or 0)
+            h, w = arr.shape[:2]
+            shape_s = f"{h}×{w}"
         bin_f = int(meta.get("bin") or 1)
         bin_note = f", bin {bin_f}×" if bin_f != 1 else ""
         self.progress.hide()
         self._set_busy(False)
         self.status.setText(
-            f"Streaming {mode} plane {plane_s} ({mb_p:.1f} MB) + "
-            f"surface {surf_s} ({occ:,} cubes, {mb_s:.1f} MB{bin_note}).\n"
-            f"BLITZ → {self._publisher_blitz.connect_hint}\n"
-            f"DONNER → {self._publisher_donner.connect_hint}"
+            f"Streaming {mode} {shape_s} "
+            f"({w * h:,} points, {mb:.1f} MB{bin_note}).\n"
+            f"BLITZ → Stream → {self._publisher.connect_hint}."
         )
 
     def _on_saved(self, path: str) -> None:
