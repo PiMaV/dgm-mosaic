@@ -7,10 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Dual Stream hubs** on Stream: **BLITZ** keeps `:5056` / token `dgm` with
+  plane `(1, H, W)` (`mosaic.npy`). **DONNER** gets `:5057` / same token with an
+  elevation **surface** `(nZ, H, W)` (`surface.npy`) — one voxel per map cell
+  along Z, no filled columns. Full Bin / full selection is sent as-is (no
+  preflight size refuse).
+
 ### Removed
 
 - Go CLI binary no longer built or attached on GitHub Releases (product path is
   the PyQt `DGM` binary only).
+- Preflight “surface would be N MB” refuse on the DONNER hub — Stream sends
+  the requested size; DONNER decides what it can load.
 
 ## [0.3.0] - 2026-09-21
 
@@ -48,15 +58,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Clear progress while loading tile previews and while building/sending.
-
-## [0.1.0] - 2026-09-18
-
-### Added
-
-- Early PyQt stage spike + PyInstaller CI release layout (port 5056 / `dgm`).
-- Optional Go CLI mosaic + hub (not the product path).
-
-### Known issues
-
-- **Not functional:** OpenCV was not bundled; tile preview / TIFF load fails.
-- Go CLI alone does not replace the DnD mosaic stage.
