@@ -731,27 +731,28 @@ def _valid_mask(z: np.ndarray) -> np.ndarray:
 
 
 def quantize_u16dm(z: np.ndarray, z0: float | None = None) -> QuantizeResult:
-    """uint16 decimetres relative to z0 — fixed 1 dm/DN, metres are authoritative.
+    """uint16 **absolute** decimetres — fixed 1 dm/DN, metres are authoritative.
 
-    ``751.3 m → 7513`` (with z0=0). Never rescales to “fit” the dtype.
+    Default ``z0=0`` (sea-level / CRS height): ``403.2 m → 4032``. Optional
+    ``z0`` is only a CLI override. Never rescales to “fit” the dtype.
     Pixel 0 = nodata. Reconstruct: ``z_m = z0_m + pixel * 0.1``.
-    Max relief from z0: 6553.5 m.
+    Representable from z0: ``0.1 … 6553.5 m`` (codes 1…65535). Above that,
+    use f32 — typical DGM terrain stays well under 6000 m.
     """
     valid = _valid_mask(z)
     if not np.any(valid):
         raise ValueError("mosaic has no valid pixels")
     z_min = float(np.nanmin(z))
     z_max = float(np.nanmax(z))
-    z0_m = float(np.floor(z_min) if z0 is None else z0)
+    z0_m = 0.0 if z0 is None else float(z0)
     dm = np.rint((z - z0_m) / U16_DM_SCALE_M)
-    if np.any(valid & (dm < 1)):
-        z0_m -= U16_DM_SCALE_M
-        dm = np.rint((z - z0_m) / U16_DM_SCALE_M)
-    if np.any(valid & ((dm < 1) | (dm > U16_CODE_MAX))):
-        relief = z_max - z0_m
+    bad = valid & ((dm < 1) | (dm > U16_CODE_MAX))
+    if np.any(bad):
+        lo = z0_m + U16_DM_SCALE_M
+        hi = z0_m + U16_CODE_MAX * U16_DM_SCALE_M
         raise ValueError(
-            f"u16dm: relief {relief:.1f} m from z0={z0_m:g} does not fit "
-            f"fixed 1 dm/DN (max {U16_CODE_MAX * U16_DM_SCALE_M:g} m). "
+            f"u16dm: absolute dm needs heights in [{lo:g}, {hi:g}] m "
+            f"(z0={z0_m:g}, data {z_min:.1f}…{z_max:.1f} m). "
             "Use format f32 (metres) — do not rescale heights to fit uint16."
         )
     out = np.zeros(z.shape, dtype=np.uint16)
@@ -768,7 +769,9 @@ def quantize_u16dm(z: np.ndarray, z0: float | None = None) -> QuantizeResult:
             "z_max_m": z_max,
             "clipped_pixels": 0,
             "unit": "dm",
-            "reconstruct": "z_m = z0_m + pixel * scale_m  (pixel 0 = nodata)",
+            "absolute": z0 is None or float(z0) == 0.0,
+            "reconstruct": "z_m = z0_m + pixel * scale_m  (pixel 0 = nodata; "
+            "default z0_m=0 → absolute dm)",
         },
     )
 

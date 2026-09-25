@@ -7,13 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-25
+
+### Changed
+
+- **u16dm** defaults to **absolute** decimetres (`z0=0`): 403.2 m → 4032. No
+  more `floor(z_min)` offset. Fails clearly above ~6553.5 m NN (use f32).
+  Optional CLI `--z0` remains for rare relative encoding.
+
 ### Removed
 
 - Go CLI binary no longer built or attached on GitHub Releases (product path is
   the PyQt `DGM` binary only).
 - Dual Stream hub / DONNER elevation **surface** (`:5057`, `surface.npy`).
   Terrain stays a `(1, H, W)` plane for **BLITZ** only — no voxel shell path.
-
 
 ## [0.3.0] - 2026-09-21
 

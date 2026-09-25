@@ -193,30 +193,43 @@ class QuantizeTests(unittest.TestCase):
         q = quantize(z, "u16dm")
         self.assertEqual(q.array.dtype, np.uint16)
         self.assertEqual(int(q.array[1, 0]), 0)
-        z0 = float(q.meta["z0_m"])
-        scale = float(q.meta["scale_m"])
-        self.assertEqual(scale, 0.1)
-        recon = z0 + q.array.astype(np.float64) * scale
+        self.assertEqual(float(q.meta["z0_m"]), 0.0)
+        self.assertEqual(float(q.meta["scale_m"]), 0.1)
+        self.assertEqual(int(q.array[0, 0]), 3987)
+        self.assertEqual(int(q.array[0, 1]), 4470)
+        self.assertEqual(int(q.array[1, 1]), 4100)
+        recon = q.array.astype(np.float64) * 0.1
         self.assertAlmostEqual(recon[0, 0], 398.7, places=1)
         self.assertAlmostEqual(recon[0, 1], 447.0, places=1)
-        self.assertGreater(int(q.array[0, 0]), 0)
 
     def test_u16dm_751_3_is_7513(self) -> None:
         z = np.array([[751.3]], dtype=np.float32)
-        q = quantize(z, "u16dm", z0=0.0)
+        q = quantize(z, "u16dm")  # default z0=0 absolute
         self.assertEqual(int(q.array[0, 0]), 7513)
         self.assertEqual(float(q.meta["scale_m"]), 0.1)
         self.assertEqual(q.meta["unit"], "dm")
         recon = 0.0 + 7513 * 0.1
         self.assertAlmostEqual(recon, 751.3, places=1)
 
+    def test_u16dm_403_is_4030(self) -> None:
+        z = np.array([[403.0, 403.2]], dtype=np.float32)
+        q = quantize(z, "u16dm")
+        self.assertEqual(int(q.array[0, 0]), 4030)
+        self.assertEqual(int(q.array[0, 1]), 4032)
+
     def test_u16dm_no_auto_scale(self) -> None:
-        # Relief larger than 6553.5 m from z0=0
-        z = np.array([[0.0, 7000.0]], dtype=np.float32)
+        # Absolute height above 6553.5 m
+        z = np.array([[100.0, 7000.0]], dtype=np.float32)
         with self.assertRaises(ValueError) as ctx:
-            quantize(z, "u16dm", z0=0.0)
+            quantize(z, "u16dm")
         self.assertIn("f32", str(ctx.exception))
         self.assertIn("not rescale", str(ctx.exception))
+
+    def test_u16dm_optional_z0_offset(self) -> None:
+        z = np.array([[403.0]], dtype=np.float32)
+        q = quantize(z, "u16dm", z0=400.0)
+        self.assertEqual(int(q.array[0, 0]), 30)
+        self.assertEqual(float(q.meta["z0_m"]), 400.0)
 
     def test_u8step_no_silent_clip(self) -> None:
         z = np.linspace(0.0, 100.0, 20, dtype=np.float32).reshape(4, 5)

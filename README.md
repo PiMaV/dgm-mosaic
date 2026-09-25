@@ -18,10 +18,10 @@ Drop a folder of DGM GeoTIFF tiles, preview the mosaic, select a rectangle,
 4. Wait for the preview bar to finish, pick tiles, click **Stream**.
 5. In BLITZ → Stream: `http://127.0.0.1:5056`, token `dgm`.
 
-Heights stay in metres (`float32`). Optional **uint16** stores **decimetres**
-(fixed 0.1 m/DN). **Bin** (default **2×**, or 4/8/16× block mean) shrinks large
-mosaics. Output is always `(1, H, W)` for the WETTER Stream contract — open in
-**BLITZ**.
+Heights stay in metres (`float32`). Optional **uint16** stores **absolute
+decimetres** (metres×10, `403.2 m → 4032`; fails above ~6553 m NN). **Bin**
+(default **2×**, or 4/8/16× block mean) shrinks large mosaics. Output is always
+`(1, H, W)` for the WETTER Stream contract — open in **BLITZ**.
 
 **Example tiles:** LGL Baden-Württemberg
 [DGM25 GeoTIFF](https://opengeodata.lgl-bw.de/#/(sidenav:product/dgm025))

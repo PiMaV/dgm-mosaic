@@ -68,7 +68,7 @@ STACK_NAME = "mosaic.npy"
 
 _MODES: tuple[tuple[DtypeMode, str], ...] = (
     ("f32", "float32 metres (exact)"),
-    ("u16dm", "uint16 decimetres (fixed 1 dm)"),
+    ("u16dm", "uint16 absolute dm (NN ×10)"),
     ("u8step", "uint8 fixed step (metres)"),
 )
 _BIN_FACTORS: tuple[int, ...] = (1, 2, 4, 8, 16)
@@ -576,7 +576,8 @@ class DgmMosaicWindow(QMainWindow):
             btn.toggled.connect(self._refresh_sizes)
         self.bin_buttons[2].setChecked(True)
         self.mode_buttons["u16dm"].setToolTip(
-            "Fixed: metres×10 → int dm. 751.3 m → 7513. Fails if relief > 6553.5 m — use f32."
+            "Absolute height in decimetres (z0=0): 403.2 m → 4032. "
+            "Fails above ~6553.5 m NN — use f32. Typical DGM stays well under 6000 m."
         )
         self.mode_buttons["f32"].setToolTip(
             "Heights stay metres (float32). Use this for large mosaics."
@@ -982,7 +983,12 @@ def main() -> None:
     parser.add_argument("--step-m", type=float, default=0.25)
     parser.add_argument("--ref", choices=("min", "mean"), default="min")
     parser.add_argument("--nodata", type=float, default=NODATA_DEFAULT)
-    parser.add_argument("--z0", type=float, default=None)
+    parser.add_argument(
+        "--z0",
+        type=float,
+        default=None,
+        help="u16dm only: height origin in metres (default 0 = absolute dm / NN)",
+    )
     parser.add_argument(
         "--bin",
         type=int,
